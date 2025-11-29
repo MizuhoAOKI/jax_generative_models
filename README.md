@@ -7,9 +7,9 @@
 <br/>
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit)](https://github.com/pre-commit/pre-commit)
-[![ruff](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/lint.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/lint.yaml)
-[![mypy](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/type_check.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/type_check.yaml)
-<!-- [![test](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/test.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_robotics/actions/workflows/test.yaml) -->
+[![ruff](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/lint.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/lint.yaml)
+[![mypy](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/type_check.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/type_check.yaml)
+<!-- [![test](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/test.yaml/badge.svg)](https://github.com/MizuhoAOKI/jax_generative_models/actions/workflows/test.yaml) -->
 
 **jax_generative_models** implements Diffusion Models (DDPM) and Flow Matching within a unified JAX framework. By abstracting these algorithms behind a shared strategy interface, the project highlights their structural similarities and differences. Utilizing Tyro for configuration and Rerun for visualization, it serves as an extensible base for exploring generative modeling.
 
