@@ -55,18 +55,19 @@ class Strategy(Protocol):
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
         """
-        Physical forward process: x0 -> x_t.
+        Compute the intermediate state x_t and its training target.
 
-        For DDPM this means: add noise according to a schedule.
+        This is used by each strategy's loss function to obtain:
+          - x_t: the state at time t
+          - target: the supervision signal (e.g. noise for DDPM, velocity for Flow Matching)
 
         Args:
-            x0: Clean data sample.
-            t: Time step / continuous time (implementation-dependent).
-            key: PRNGKey for sampling noise, etc.
+            x:   Data sample used as anchor (x_0 or x_1 depending on strategy).
+            t:   Time step or continuous time.
+            key: PRNGKey for any stochastic sampling.
 
         Returns:
-            (x_t)
-              x_t: noised sample.
+            (x_t, target)
         """
         ...
 
@@ -78,16 +79,18 @@ class Strategy(Protocol):
         key: jax.Array,
     ) -> jax.Array:
         """
-        Physical backward process: model prediction from x_t, t.
+        Transport step in the generative process.
 
-        For DDPM this is typically epsilon prediction or x0 prediction.
+        Given x_t and t, return the next state (e.g. x_{t-1} or x_{t+1}),
+        using the provided model.
 
         Args:
             model: Equinox model.
-            xt: Noised sample x_t.
-            t: Time step / continuous time.
+            x_t:  State at time t (e.g. noised sample).
+            t:    Time step or continuous time.
+            key:  PRNGKey for any stochastic sampling.
 
         Returns:
-            Model prediction (e.g. epsilon_pred), same shape as x0.
+            The next state in the transport process.
         """
         ...
