@@ -1,0 +1,35 @@
+# .pre-commit-config.yaml
+
+repos:
+# 1. Basic pre-commit hooks for general file health
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+    -   id: trailing-whitespace         # Removes trailing whitespace
+    -   id: end-of-file-fixer           # Ensures files end in a newline
+    -   id: check-yaml                  # Checks YAML files for parseable syntax
+    -   id: check-toml                  # Checks TOML files for parseable syntax
+    -   id: check-added-large-files     # Prevents committing large files
+
+# 2. Ruff for linting and formatting, using your pyproject.toml settings
+-   repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep this version in sync with your pyproject.toml
+    rev: v0.5.5
+    hooks:
+    - id: ruff-format
+      name: ruff (formatter)
+    - id: ruff
+      name: ruff (linter)
+      args: [--fix, --exit-non-zero-on-fix]
+
+# 3. Mypy for static type checking, also uses pyproject.toml settings
+- repo: local
+  hooks:
+    - id: mypy
+      name: mypy (project venv via uv)
+      entry: uv run mypy
+      language: system
+      types: [python]
+      args:
+        - --install-types
+        - --non-interactive

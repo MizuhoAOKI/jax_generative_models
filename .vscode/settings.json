@@ -1,0 +1,40 @@
+{
+    // editor settings
+    "editor.rulers": [100],
+
+    // --- Python interpreter settings ---
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+    // --- mypy settings ---
+    "mypy-type-checker.path": [
+        "${workspaceFolder}/.venv/bin/mypy"
+    ],
+
+    // --- Ruff Linter/Formatter Settings ---
+    // Ensure VS Code uses the project-specific Ruff installation and config.
+    "ruff.path": ["${workspaceFolder}/.venv/bin/ruff"],
+    "ruff.config": ["${workspaceFolder}/pyproject.toml"],
+
+    // --- Python-specific settings ---
+    "[python]": {
+        // Use the Ruff extension as the default formatter
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        // Format the file on every save
+        "editor.formatOnSave": true
+    },
+
+    // --- Enable Ruff's "fix on save" feature ---
+    // This will automatically fix linting errors (like unused imports)
+    "editor.codeActionsOnSave": {
+        "source.fixAll": "explicit"
+    },
+
+    // --- Pylance (standard type checker) settings ---
+    "python.analysis.typeCheckingMode": "basic",
+
+    // --- Mypy extension settings ---
+    "mypy-type-checker.importStrategy": "fromEnvironment",
+
+    // --- Terminal settings ---
+    "python.terminal.activateEnvInCurrentTerminal": true,
+}

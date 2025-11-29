@@ -1,0 +1,47 @@
+# Custom settings
+*.mp4
+*.pkl
+.direnv
+outputs/
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# Packages
+*.egg
+!/tests/**/*.egg
+/*.egg-info
+/dist/*
+build
+_build
+.cache
+*.so
+
+# Others
+.coverage
+.pytest_cache
+.DS_Store
+.idea/*
+/test.py
+/test_*.*
+/setup.cfg
+MANIFEST.in
+/setup.py
+/docs/site/*
+/tests/fixtures/simple_project/setup.py
+/tests/fixtures/project_with_extras/setup.py
+.mypy_cache
+/releases/*
+pip-wheel-metadata
+.ruff_cache

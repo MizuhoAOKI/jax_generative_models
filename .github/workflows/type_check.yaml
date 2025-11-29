@@ -1,0 +1,41 @@
+# Workflow name
+name: mypy
+
+# Triggers
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Job
+jobs:
+  type-check:
+    # Job name
+    name: mypy
+
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checks-out your repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # 3. Install uv
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      # 4. Install development dependencies
+      - name: Install dev dependencies
+        run: uv sync --dev
+
+      # 5. Run mypy for static type checking
+      - name: Run mypy
+        run: uv run mypy .
