@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import tyro
 from PIL import Image
-from sklearn.datasets import make_moons
+from sklearn.datasets import make_moons, make_swiss_roll
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
@@ -72,12 +72,30 @@ class MoonConfig:
     """Rescaling factor to fit the data within approximately [-scale, scale]."""
 
 
+@dataclass(frozen=True)
+class SwissRollConfig:
+    """Configuration for the Sklearn 'Make Swiss Roll' dataset."""
+
+    name: Literal["swiss_roll"] = "swiss_roll"
+    """The dataset identifier."""
+
+    data_dim: int = 2
+    """Dimensionality of the data."""
+
+    noise: float = 0.05
+    """Standard deviation of Gaussian noise added to the data (sklearn param)."""
+
+    scale: float = 0.15
+    """Rescaling factor to fit the data within approximately [-scale, scale]."""
+
+
 # Union type for Tyro CLI parsing.
 # This enables automatic subcommand generation (e.g., `python main.py --dataset:cat ...`).
 DatasetConfig = Union[
     Annotated[GaussianMixtureConfig, tyro.conf.subcommand("gaussian-mixture")],
     Annotated[CatConfig, tyro.conf.subcommand("cat")],
     Annotated[MoonConfig, tyro.conf.subcommand("moon")],
+    Annotated[SwissRollConfig, tyro.conf.subcommand("swiss-roll")],
 ]
 
 
@@ -237,6 +255,37 @@ def _get_moon_batch(key: jax.Array, config: MoonConfig, batch_size: int) -> jax.
     return jnp.array(x_np, dtype=jnp.float32)
 
 
+def _get_swiss_roll_batch(key: jax.Array, config: SwissRollConfig, batch_size: int) -> jax.Array:
+    """Generates a batch from the 'Swiss Roll' dataset using scikit-learn.
+
+    Note:
+        `sklearn.datasets.make_swiss_roll` is CPU-bound and Numpy-based.
+        This function handles the necessary synchronization between JAX and CPU.
+
+    Args:
+        key: JAX PRNGKey.
+        config: Swiss Roll dataset configuration.
+        batch_size: Number of samples to generate.
+
+    Returns:
+        Sampled batch of shape (batch_size, 2).
+    """
+    # Convert JAX key to a standard integer seed for sklearn (CPU)
+    seed = jax.random.randint(key, (), 0, 2**30).item()
+
+    # Generate data on CPU
+    x_np, _ = make_swiss_roll(n_samples=batch_size, noise=config.noise, random_state=seed)
+
+    # We only take the first two dimensions to get a 2D dataset
+    x_np = x_np[:, [0, 2]]
+
+    # Center and scale
+    x_np = x_np - jnp.mean(x_np, axis=0)
+    x_np = x_np * config.scale
+
+    return jnp.array(x_np, dtype=jnp.float32)
+
+
 # --------------------------------------------------------
 # Public Dispatcher
 # --------------------------------------------------------
@@ -263,5 +312,7 @@ def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> jax.Arr
             return _get_cat_batch(key, config, batch_size)
         case MoonConfig():
             return _get_moon_batch(key, config, batch_size)
+        case SwissRollConfig():
+            return _get_swiss_roll_batch(key, config, batch_size)
         case _:
             raise ValueError(f"Unknown config type: {type(config)}")
