@@ -19,6 +19,10 @@ By abstracting these methods behind a common "strategy" interface, the project h
 structural similarities and differences. With Tyro for configuration and Rerun for visualization, it
 serves as a compact yet extensible base for experimenting with generative models.
 
+|                    |      cat      | moon | swiss-roll |
+| :----------------  | :-------------------------------------: | :-----------------------------------: | :-----------------------------------: |
+| Diffusion (DDPM)   | <img src="./media/ddpm_mlp_cat.gif" width="250"> | <img src="./media/ddpm_mlp_moon.gif" width="250"> | <img src="./media/ddpm_mlp_swiss_roll.gif" width="250"> |
+| Flow Matching      | <img src="./media/flow_matching_mlp_cat.gif" width="250"> | <img src="./media/flow_matching_mlp_moon.gif" width="250"> | <img src="./media/flow_matching_mlp_swiss_roll.gif" width="250"> |
 
 ## Getting Started
 
@@ -94,7 +98,7 @@ If omitted, each argument falls back to its default value.
 | :------------------ | :------------------------------------- | :------ | :----------------------------------- |
 | `<STRATEGY_NAME>`   | `ddpm`, `flow-matching`                | `ddpm`  | Generative modeling strategy.        |
 | `<MODEL_NAME>`      | `mlp`, `resnet`                        | `mlp`   | Model architecture to use.           |
-| `<DATASET_NAME>`    | `cat`, `gaussian-mixture`, `moon`      | `cat`   | Target dataset for training/generation. |
+| `<DATASET_NAME>`    | `cat`, `gaussian-mixture`, `moon`, `swiss-roll` | `cat` | Target dataset for training/generation. |
 
 For example, to train a DDPM with an MLP on the "cat" dataset (the default configuration), run:
 
