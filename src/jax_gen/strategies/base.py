@@ -11,7 +11,14 @@ import jax
 
 
 class Strategy(Protocol):
-    """Generative modeling strategy interface (DDPM, flow matching, etc.)."""
+    """Generative modeling strategy interface (DDPM, Flow Matching, etc.).
+
+    Unified Time Convention for implementation:
+        t = 0.0 : Source Distribution (Prior / Noise)
+        t = 1.0 : Target Distribution (Data)
+
+    The generative process (sampling) always runs from t=0 to t=1.
+    """
 
     def loss_fn(
         self,
@@ -20,12 +27,12 @@ class Strategy(Protocol):
         key: jax.Array,
     ) -> jax.Array:
         """
-        Loss for a *single sample*.
+        Computes the training loss for a single sample.
 
         Args:
             model: Equinox model.
-            x: One data sample, shape (data_dim,) or (..., data_dim).
-            key: PRNGKey for this sample.
+            x: One clean data sample, corresponds to data at t=1.
+            key: PRNGKey for stochastic sampling.
 
         Returns:
             Scalar loss (0-dim JAX jax.Array).
@@ -36,7 +43,16 @@ class Strategy(Protocol):
         self, key: jax.Array, num_samples: int, data_dim: int
     ) -> jax.Array:
         """
-        Sample initial data for generation.
+        Sample initial data for generation (Source Distribution at t=0).
+        Typically Gaussian noise N(0, I).
+
+        Args:
+            key: PRNGKey.
+            num_samples: Number of samples to generate.
+            data_dim: Dimensionality of the data.
+
+        Returns:
+            Samples from the source distribution.
         """
         ...
 
@@ -44,34 +60,45 @@ class Strategy(Protocol):
         self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
     ) -> tuple[jax.Array, jax.Array]:
         """
-        Sample data from the target distribution (data distribution).
+        Sample data from the target distribution (Data Distribution at t=1).
+        This executes the full generative process from t=0 to t=1.
+
+        Args:
+            model: Trained Equinox model.
+            key: PRNGKey.
+            num_samples: Number of samples.
+            data_dim: Dimensionality.
+
+        Returns:
+            tuple containing:
+            - x_final: The generated samples at t=1.
+            - x_traj: The full trajectory (history) from t=0 to t=1.
         """
         ...
 
     def forward(
         self,
         t: jax.Array,
-        x_0: jax.Array,
+        x: jax.Array,
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
         """
         Compute the intermediate state x_t and its training target.
-
-        This is used by each strategy's loss function to obtain:
-          - x_t: the state at time t
-          - target: the supervision signal (e.g. noise for DDPM, velocity for Flow Matching)
+        (Forward process in terms of training / perturbation).
 
         Args:
-            x:   Data sample used as anchor (x_0 or x_1 depending on strategy).
-            t:   Time step or continuous time.
+            t:   Time step or continuous time (in [0, 1]).
+            x:   Clean data sample (Target data).
             key: PRNGKey for any stochastic sampling.
 
         Returns:
             (x_t, target)
+            - x_t: The state at time t.
+            - target: The supervision signal (e.g. noise, velocity).
         """
         ...
 
-    def backward(
+    def reverse(
         self,
         model: eqx.Module,
         t: jax.Array,
@@ -79,18 +106,16 @@ class Strategy(Protocol):
         key: jax.Array,
     ) -> jax.Array:
         """
-        Transport step in the generative process.
-
-        Given x_t and t, return the next state (e.g. x_{t-1} or x_{t+1}),
-        using the provided model.
+        Transport step in the generative process (Solver step).
+        Moves the state towards the target distribution (t -> t + dt).
 
         Args:
             model: Equinox model.
-            x_t:  State at time t (e.g. noised sample).
-            t:    Time step or continuous time.
+            t:    Current time step or continuous time.
+            x_t:  State at time t.
             key:  PRNGKey for any stochastic sampling.
 
         Returns:
-            The next state in the transport process.
+            The next state in the transport process (closer to Data).
         """
         ...

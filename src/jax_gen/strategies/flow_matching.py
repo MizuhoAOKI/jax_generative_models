@@ -18,7 +18,7 @@ class FlowMatchingStrategyConfig:
     """Configuration for Flow Matching strategy."""
 
     name: Literal["flow_matching"] = "flow_matching"
-    """Strategy identifier (fixed to 'flow_matching')."""
+    """Strategy identifier."""
 
     num_transport_steps: int = 100
     """Number of integration steps for the ODE solver."""
@@ -31,25 +31,17 @@ class FlowMatchingStrategyConfig:
 class FlowMatchingStrategy(Strategy):
     """Flow Matching strategy in R^d using Optimal Transport Conditional Flow Matching.
 
-    This class implements a Flow Matching strategy with a linear interpolation path
-    between a base Gaussian distribution and the data distribution.
+    Unified Time Convention:
+        t = 0.0 : Source Distribution (Prior / Noise)
+        t = 1.0 : Target Distribution (Data)
 
-    Comparison with DDPMStrategy:
-        DDPM:
-            - State (x_t): Corrupted data via diffusion process (adding noise).
-            - Model: Predicts noise (epsilon) or score.
-            - Dynamics: Stochastic reverse diffusion process ($x_T \to x_0$).
-            - Loss: MSE between predicted noise and added noise.
-
-        Flow Matching (this class):
-            - State (x_t): Linear interpolation between source ($x_0$) and target ($x_1$).
-            - Model: Predicts the velocity field $v(t, x_t)$.
-            - Dynamics: Deterministic ODE integration ($x_0 \to x_1$).
-            - Loss: MSE between predicted velocity and the vector field generating the path.
+    Dynamics:
+        ODE integration from t=0 to t=1.
+        x_t = (1 - t) * x_source + t * x_target
 
     Attributes:
-        num_transport_steps: Number of integration steps for the ODE solver.
-        base_std: Standard deviation of the base Gaussian distribution ($x_0$).
+        num_transport_steps: Number of integration steps.
+        base_std: Std of the base Gaussian.
     """
 
     num_transport_steps: int
@@ -57,14 +49,7 @@ class FlowMatchingStrategy(Strategy):
 
     @classmethod
     def from_config(cls, cfg: FlowMatchingStrategyConfig) -> FlowMatchingStrategy:
-        """Initializes the strategy from a configuration object.
-
-        Args:
-            cfg: The Flow Matching configuration object.
-
-        Returns:
-            An initialized FlowMatchingStrategy instance.
-        """
+        """Initializes the strategy from a configuration object."""
         return cls(
             num_transport_steps=cfg.num_transport_steps,
             base_std=cfg.base_std,
@@ -77,26 +62,15 @@ class FlowMatchingStrategy(Strategy):
     def loss_fn(
         self,
         model: eqx.Module,
-        x_1: jax.Array,
+        x: jax.Array,
         key: jax.Array,
     ) -> jax.Array:
         """Computes the Flow Matching loss for a single sample.
 
-        The loss is defined based on the Conditional Flow Matching objective:
-        $$ L_{CFM} = \\mathbb{E}_{t, x_1, x_0} [ \\| v_\theta(t, x_t) - (x_1 - x_0) \\|^2 ] $$
-
-        Process:
-            1. Sample time $t \\sim U(0, 1)$.
-            2. Sample source noise $x_0 \\sim \\mathcal{N}(0, \\sigma^2 I)$.
-            3. Compute interpolated state $x_t = (1 - t) x_0 + t x_1$.
-            4. Compute target velocity $u_t(x_1 | x_0) = x_1 - x_0$.
-            5. Predict velocity $v_\theta(t, x_t)$ using the model.
-            6. Compute MSE loss.
-
         Args:
-            model: The Equinox model to train.
-            x_1: A single data sample from the target distribution (batch dim 1).
-            key: PRNGKey for sampling time and source noise.
+            model: The Equinox model.
+            x: A single clean data sample (t=1).
+            key: PRNGKey.
 
         Returns:
             The scalar MSE loss.
@@ -106,112 +80,69 @@ class FlowMatchingStrategy(Strategy):
         # 1. Sample continuous time t ~ Uniform(0, 1)
         t = jax.random.uniform(
             key_t,
-            shape=(),  # scalar
+            shape=(),
             minval=0.0,
             maxval=1.0,
         )
 
-        # 2. Sample x_0 from the base distribution
-        x_0 = jax.random.normal(key_base, shape=x_1.shape) * self.base_std
+        # 2. Compute intermediate state x_t and target velocity
+        x_t, target_v = self.forward(t, x, key_base)
 
-        # 3. Compute intermediate state x_t via linear interpolation
-        x_t = (1.0 - t) * x_0 + t * x_1
+        # 3. Predict velocity using the model
+        v_pred = model(t, x_t)  # type: ignore # model is Callable
 
-        # 4. Compute true velocity field (constant derivative for linear path)
-        target_v = x_1 - x_0
-
-        # 5. Predict velocity using the model
-        v_pred = self.predict_velocity(model, t, x_t)
-
-        # 6. Calculate Mean Squared Error
+        # 4. Calculate Mean Squared Error
         loss = jnp.mean((v_pred - target_v) ** 2)
         return loss
-
-    def predict_velocity(
-        self,
-        model: eqx.Module,
-        t: jax.Array,
-        x_t: jax.Array,
-    ) -> jax.Array:
-        """Wrapper to call the model to predict velocity.
-
-        Semantically equivalent to `predict_noise` in DDPM but represents the
-        time derivative of the flow.
-
-        Args:
-            model: The Equinox model.
-            t: Continuous time variable.
-            x_t: State at time t.
-
-        Returns:
-            Predicted velocity vector $v_\theta(t, x_t)$.
-        """
-        return model(t, x_t)  # type: ignore # model is Callable
 
     def forward(
         self,
         t: jax.Array,
-        x_1: jax.Array,
+        x: jax.Array,
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        """Generates an interpolated sample and its target velocity.
-
-        While `loss_fn` is sufficient for training, this utility exposes the
-        underlying linear interpolation logic:
-        $$ x_t = (1 - t) x_0 + t x_1 $$
-        $$ v^* = x_1 - x_0 $$
+        """Calculates x_t and target vector field (Forward Process).
 
         Args:
             t: Continuous time scalar.
-            x_1: Target data sample.
-            key: PRNGKey for sampling source noise $x_0$.
+            x: Target data sample (Data, t=1).
+            key: PRNGKey for sampling source noise.
 
         Returns:
-            A tuple containing:
-                - x_t: The interpolated state.
-                - target_v: The target velocity vector.
+            (x_t, target_v)
         """
-        x_0 = jax.random.normal(key, shape=x_1.shape) * self.base_std
-        x_t = (1.0 - t) * x_0 + t * x_1
-        target_v = x_1 - x_0
+        # Sample x_source (Noise, t=0)
+        x_source = jax.random.normal(key, shape=x.shape) * self.base_std
+
+        # Linear Interpolation: x_t = (1 - t) * x_source + t * x_target
+        x_t = (1.0 - t) * x_source + t * x
+
+        # Target velocity: d/dt(x_t) = x_target - x_source
+        target_v = x - x_source
         return x_t, target_v
 
-    def backward(
+    def reverse(
         self,
         model: eqx.Module,
-        t_idx: jax.Array,
+        t: jax.Array,
         x_t: jax.Array,
         key: jax.Array,
     ) -> jax.Array:
-        """Performs a single ODE integration step for generation.
-
-        Solves the ODE $dx/dt = v_\theta(t, x)$ using the Forward Euler method.
-
-        Contrast with DDPM:
-            - DDPM: $x_t \to x_{t-1}$ (Stochastic denoising).
-            - Flow Matching: $x_t \to x_{t+1}$ (Deterministic flow integration).
-
-        Note: To maintain interface consistency with `Strategy`, this method accepts
-        `t_idx` (integer step) but converts it to continuous time for the model.
+        """Performs a single ODE integration step: Moves t towards 1 (Data).
 
         Args:
             model: The trained Equinox model.
-            t_idx: Current integer time step index.
-            x_t: Current state at time corresponding to `t_idx`.
-            key: PRNGKey (unused here as Flow Matching sampling is deterministic).
+            t: Current time.
+            x_t: Current state.
+            key: PRNGKey (unused for deterministic ODE).
 
         Returns:
-            The state at the next time step $x_{t+1}$.
+            The state at the next time step.
         """
-        del key  # Flow Matching backward step is deterministic
-
-        # Convert discrete index t_idx to continuous time t in range (0, 1]
-        # Using midpoint or start point depending on integration scheme preference.
-        # Here we use midpoint for the velocity query.
-        t = (t_idx.astype(jnp.float32) + 0.5) / float(self.num_transport_steps)
+        del key  # Flow Matching reverse step is deterministic
 
         # Predict velocity
-        v_pred = self.predict_velocity(model, t, x_t)
+        v_pred = model(t, x_t)  # type: ignore # model is Callable
 
         # Forward Euler Integration
         dt = 1.0 / float(self.num_transport_steps)
@@ -222,52 +153,59 @@ class FlowMatchingStrategy(Strategy):
     def sample_from_source_distribution(
         self, key: jax.Array, num_samples: int, data_dim: int
     ) -> jax.Array:
-        r"""Samples initial latent data $x_0 \sim \mathcal{N}(0, \sigma^2 I)$."""
+        r"""Samples initial latent data (Source at t=0)."""
         return jax.random.normal(key, (num_samples, data_dim)) * self.base_std
 
     def sample_from_target_distribution(
         self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
     ) -> tuple[jax.Array, jax.Array]:
-        """Generates samples by solving the probability flow ODE.
-
-        Integrates from $t=0$ (source) to $t=1$ (target).
+        """Generates samples by solving the probability flow ODE from t=0 to t=1.
 
         Args:
             model: The trained Equinox model.
-            key: PRNGKey for initial sampling.
-            num_samples: Number of samples to generate.
-            data_dim: Dimensionality of the data.
+            key: PRNGKey.
+            num_samples: Number of samples.
+            data_dim: Dimensionality.
 
         Returns:
-            A tuple containing:
-                - x_target: The final generated samples ($x_1$).
-                - x_traj: The full trajectory of samples (from $t=0$ to $t=1$).
+            (x_final, x_traj)
         """
-        # Start from the source distribution x_0
+        # Start from the source distribution x_source
         x_src = self.sample_from_source_distribution(key, num_samples, data_dim)
 
-        def scan_body(
-            x_t: jax.Array, carry: tuple[jax.Array, jax.Array]
-        ) -> tuple[jax.Array, jax.Array]:
-            t, current_key = carry
-            # key handling is kept for interface compatibility, though unused in step
-            next_key, subkey = jax.random.split(current_key)
+        # Define time steps range [0, ..., 1]
+        dt = 1.0 / self.num_transport_steps
+        ts = jnp.linspace(0.0, 1.0 - dt, self.num_transport_steps)
 
+        # Keys are technically not needed for ODE, but kept for interface consistency
+        keys = jax.random.split(key, self.num_transport_steps)
+
+        def scan_body(
+            x_t: jax.Array, step_inputs: tuple[jax.Array, jax.Array]
+        ) -> tuple[jax.Array, jax.Array]:
+            """
+            JAX scan expects: (carry, xs) -> (new_carry, y)
+            In this context: carry = x_t (state), xs = (t, key)
+            The returned value x_next is used as both new_carry and y.
+            """
+            t, current_key = step_inputs
+
+            # Split keys for batch (though unused in FM reverse)
             B = x_t.shape[0]
-            batch_keys = jax.random.split(subkey, B)
+            batch_keys = jax.random.split(current_key, B)
 
             # Vectorize the integration step
             x_next = jax.vmap(
-                self.backward,
-                in_axes=(None, None, 0, 0),  # model: None, t: None, x_t: batch, keys: batch
+                self.reverse,
+                in_axes=(None, None, 0, 0),
             )(model, t, x_t, batch_keys)
 
             return x_next, x_next
 
-        # Define time steps range [0, ..., T-1] for integration
-        ts = jnp.arange(0, self.num_transport_steps)
-        keys = jax.random.split(key, self.num_transport_steps)
-
         # Run the ODE solver loop
-        x_target, x_traj = jax.lax.scan(scan_body, x_src, (ts, keys))
-        return x_target, x_traj
+        x_final, x_traj = jax.lax.scan(scan_body, x_src, (ts, keys))
+
+        # Prepend initial state to trajectory
+        x_traj_full = jnp.concatenate([x_src[None, ...], x_traj], axis=0)
+
+        return x_final, x_traj_full

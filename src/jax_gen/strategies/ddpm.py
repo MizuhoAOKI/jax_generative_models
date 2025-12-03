@@ -18,15 +18,15 @@ class DDPMStrategyConfig:
     """Configuration for Denoising Diffusion Probabilistic Models (DDPM)."""
 
     name: Literal["ddpm"] = "ddpm"
-    """Strategy identifier (fixed to 'ddpm')."""
+    """Strategy identifier."""
 
-    num_transport_steps: int = 100
+    num_transport_steps: int = 1000
     """Number of discrete steps in the diffusion process."""
 
     beta_min: float = 1e-4
     """The lower bound of the noise variance schedule."""
 
-    beta_max: float = 1e-2
+    beta_max: float = 0.02
     """The upper bound of the noise variance schedule."""
 
 
@@ -34,18 +34,20 @@ class DDPMStrategyConfig:
 class DDPMStrategy(Strategy):
     """A Denoising Diffusion Probabilistic Model (DDPM) strategy.
 
-    This class implements the standard DDPM framework (Ho et al., 2020).
-    It manages the discrete-time noise schedule, the forward diffusion process
-    (adding noise), and the reverse denoising process (removing noise).
+    Unified Time Convention:
+        t = 0.0 : Source Distribution (Prior / Noise)
+        t = 1.0 : Target Distribution (Data)
 
-    Assumes the model signature is:
-        `eps_pred = model(t_normalized, x_t)`
-    where `t_normalized` is a float in range [0, 1].
+    Internal Logic:
+        Standard DDPM defines t=0 as Data and t=T as Noise.
+        This class maps the unified input t in [0, 1] to the internal DDPM steps:
+        - Input t=0.0 (Noise) -> DDPM step T-1
+        - Input t=1.0 (Data)  -> DDPM step 0
 
     Attributes:
         num_transport_steps: The total number of diffusion steps (T).
-        betas: The linear variance schedule $\beta_t$.
-        alphas_cumprod: The cumulative product of alphas $\bar{\alpha}_t$.
+        betas: The linear variance schedule beta_t.
+        alphas_cumprod: The cumulative product of alphas.
     """
 
     num_transport_steps: int
@@ -54,16 +56,7 @@ class DDPMStrategy(Strategy):
 
     @classmethod
     def from_config(cls, cfg: DDPMStrategyConfig) -> DDPMStrategy:
-        """Initializes the strategy from a configuration object.
-
-        Constructs the linear beta schedule and pre-computes alpha cumulatives.
-
-        Args:
-            cfg: The DDPM configuration object.
-
-        Returns:
-            An initialized DDPMStrategy instance.
-        """
+        """Initializes the strategy from a configuration object."""
         betas = jnp.linspace(cfg.beta_min, cfg.beta_max, cfg.num_transport_steps)
         alphas = 1.0 - betas
         alphas_cumprod = jnp.cumprod(alphas)
@@ -77,16 +70,14 @@ class DDPMStrategy(Strategy):
     # Internal Helpers
     # --------------------------------------------------------
 
-    def _alpha_bar(self, t_idx: jax.Array) -> jax.Array:
-        """Retrieves $\bar{\alpha}_t$ for a given integer time index.
-
-        Args:
-            t_idx: Integer time index (scalar).
-
-        Returns:
-            The cumulative alpha value at index `t_idx`.
-        """
-        return self.alphas_cumprod[t_idx]
+    def _get_ddpm_index(self, t: jax.Array) -> jax.Array:
+        """Maps unified time t in [0, 1] (0=Noise, 1=Data)
+        to DDPM index in [T-1, 0] (T-1=Noise, 0=Data)."""
+        # t=0.0 -> idx=T-1 (Pure Noise)
+        # t=1.0 -> idx=0   (Pure Data)
+        # We clip to ensure indices are valid even if t is slightly out of bounds.
+        idx = jnp.floor((1.0 - t) * (self.num_transport_steps - 1)).astype(jnp.int32)
+        return jnp.clip(idx, 0, self.num_transport_steps - 1)
 
     # --------------------------------------------------------
     # Strategy Interface Implementation
@@ -100,196 +91,179 @@ class DDPMStrategy(Strategy):
     ) -> jax.Array:
         """Computes the DDPM loss for a single sample.
 
-        The loss is defined as:
-        $$ L = \\mathbb{E}_{t, x_0, \\epsilon}
-        [ \\| \\epsilon - \\epsilon_\theta(x_t, t) \\|^2] $$
-
         Args:
             model: The Equinox model to train.
-            x: A single data sample.
-            key: PRNGKey for sampling time `t` and noise `eps`.
+            x: A single clean data sample (t=1).
+            key: PRNGKey.
 
         Returns:
             The scalar MSE loss.
         """
         key_t, key_noise = jax.random.split(key, 2)
 
-        # Sample a random time step `t` uniformly from [0, T)
-        t = jax.random.randint(
+        # Sample t uniform [0, 1] (Unified time: 0=Noise, 1=Data)
+        t = jax.random.uniform(
             key_t,
-            shape=(),  # scalar
-            minval=0,
-            maxval=self.num_transport_steps,
+            shape=(),
+            minval=0.0,
+            maxval=1.0,
         )
 
+        # Get x_t (noisy state) and the noise added (target)
         x_t, eps_true = self.forward(t, x, key_noise)
-        eps_pred = self.predict_noise(model, t, x_t)
 
-        # Calculate Mean Squared Error over all dimensions
+        # Predict noise. The model receives normalized time t.
+        # Note: If the model expects specific embeddings, ensure t is consistent.
+        eps_pred = model(t, x_t)  # type: ignore # model is Callable
+
+        # Calculate Mean Squared Error
         loss = jnp.mean((eps_pred - eps_true) ** 2)
         return loss
 
     def forward(
         self,
         t: jax.Array,
-        x_0: jax.Array,
+        x: jax.Array,
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        """Simulates the forward diffusion process $q(x_t | x_0)$.
+        """Corrupts data to state at time t (Forward Process).
 
-        Computes $x_t$ using the reparameterization trick:
-        $$ x_t = \\sqrt{\bar{\alpha}_t} x_0 + \\sqrt{1 - \bar{\alpha}_t} \\epsilon $$
+        Maps t (0->1) to DDPM schedule (Noise->Data) inversely.
 
         Args:
-            t: Integer time step index.
-            x_0: The clean data sample.
-            key: PRNGKey for sampling the Gaussian noise.
+            t: Continuous time in [0, 1]. 0=Noise, 1=Data.
+            x: Clean data sample (Data).
+            key: PRNGKey for noise injection.
 
         Returns:
-            A tuple containing:
-                - x_t: The noisy sample at time `t`.
-                - eps: The noise injected (target for the model).
+            (x_t, eps)
         """
-        eps = jax.random.normal(key, shape=x_0.shape)
-        alpha_bar_t = self._alpha_bar(t)
+        # Map t to DDPM index (high index = high noise)
+        ddpm_idx = self._get_ddpm_index(t)
+
+        # Retrieve alpha_bar for the corresponding DDPM step
+        alpha_bar_t = self.alphas_cumprod[ddpm_idx]
+
+        eps = jax.random.normal(key, shape=x.shape)
 
         # Reparameterization trick
-        # shape broadcasting: alpha_bar_t is scalar
-        x_t = jnp.sqrt(alpha_bar_t) * x_0 + jnp.sqrt(1.0 - alpha_bar_t) * eps
+        # t=0 (Noise) -> alpha_bar ~ 0 -> x_t ~ eps
+        # t=1 (Data)  -> alpha_bar ~ 1 -> x_t ~ x
+        x_t = jnp.sqrt(alpha_bar_t) * x + jnp.sqrt(1.0 - alpha_bar_t) * eps
         return x_t, eps
 
-    def predict_noise(
-        self,
-        model: eqx.Module,
-        t: jax.Array,
-        x_t: jax.Array,
-    ) -> jax.Array:
-        """Wrapper to call the model with normalized time.
-
-        Args:
-            model: The Equinox model.
-            t: Integer time step in [0, num_transport_steps).
-            x_t: Noisy input data.
-
-        Returns:
-            The predicted noise epsilon.
-        """
-        # Normalize time to [0, 1] with a half-step offset
-        t_norm = (t.astype(jnp.float32) + 0.5) / float(self.num_transport_steps)
-        eps_pred = model(t_norm, x_t)  # type: ignore # model is Callable
-        return eps_pred
-
-    def backward(
+    def reverse(
         self,
         model: eqx.Module,
         t: jax.Array,
         x_t: jax.Array,
         key: jax.Array,
     ) -> jax.Array:
-        """Performs a single reverse diffusion step: $x_t \to x_{t-1}$.
+        """Performs a single generation step: Moves t towards 1 (Data).
 
-        Follows Equation 11 from Ho et al. (2020) to approximate the posterior:
-        $$ p_\theta(x_{t-1} | x_t) =
-        \\mathcal{N}(x_{t-1}; \\mu_\theta(x_t, t), \\Sigma_\theta(x_t, t)) $$
-
-        Process:
-        1. Predict noise $\\epsilon_\theta$ using the model.
-        2. Calculate the posterior mean $\\mu_\theta$.
-        3. Sample $x_{t-1}$ by adding noise (only if $t > 0$).
+        Corresponds to the standard DDPM reverse step x_t -> x_{t-1}.
 
         Args:
             model: The trained Equinox model.
-            t: Current integer time step.
-            x_t: Sample at current time step `t`.
+            t: Current time in [0, 1].
+            x_t: Current state.
             key: PRNGKey for stochastic sampling.
 
         Returns:
-            The sample at the previous time step $x_{t-1}$.
+            The state at the next time step (closer to Data).
         """
-        # 1. Predict noise using the model
-        eps_pred = self.predict_noise(model, t, x_t)
+        # Current DDPM index (e.g., T-1). We want to move to T-2.
+        curr_idx = self._get_ddpm_index(t)
 
-        # 2. Calculate distribution parameters
-        beta_t = self.betas[t]  # scalar
-        alpha_t = 1.0 - beta_t  # scalar
-        alpha_bar_t = self.alphas_cumprod[t]  # scalar
+        # Standard DDPM parameters for this index
+        beta_t = self.betas[curr_idx]
+        alpha_t = 1.0 - beta_t
+        alpha_bar_t = self.alphas_cumprod[curr_idx]
 
-        # Get alpha_bar for t-1 (handle t=0 case where prev is 1.0)
+        # Get alpha_bar for the previous DDPM step (closer to data)
+        # Note: 'previous' in DDPM means index - 1
         alpha_bar_prev = jnp.where(
-            t > 0,
-            self.alphas_cumprod[t - 1],
+            curr_idx > 0,
+            self.alphas_cumprod[curr_idx - 1],
             jnp.array(1.0, dtype=alpha_bar_t.dtype),
         )
 
-        # Calculate mean mu_theta (Ho et al. 2020, Eq. 11)
+        # 1. Predict noise
+        eps_pred = model(t, x_t)  # type: ignore # model is Callable
+
+        # 2. Calculate mean (mu_theta)
         coef1 = 1.0 / jnp.sqrt(alpha_t)
         coef2 = (1.0 - alpha_t) / jnp.sqrt(1.0 - alpha_bar_t)
         mean = coef1 * (x_t - coef2 * eps_pred)
 
-        # 3. Sample x_{t-1}
-        # If t=0, return the mean directly (no noise added at the final step).
+        # 3. Sample next state (add noise if not at the very end)
+        # In unified time, we are moving t -> 1.0.
+        # The final step is when DDPM index reaches 0.
         def no_noise(_: jax.Array) -> jax.Array:
             return mean
 
-        # If t>0, add scaled Gaussian noise.
         def add_noise(k: jax.Array) -> jax.Array:
             noise = jax.random.normal(k, shape=x_t.shape)
-            # Calculate standard DDPM posterior variance (sigma_t)
-            # This corresponds to the variance of q(x_{t-1} | x_t, x_0)
             sigma_t = jnp.sqrt(((1.0 - alpha_bar_prev) / (1.0 - alpha_bar_t)) * beta_t)
             return mean + sigma_t * noise
 
-        return jax.lax.cond(t == 0, no_noise, add_noise, key)
+        return jax.lax.cond(curr_idx == 0, no_noise, add_noise, key)
 
     def sample_from_source_distribution(
         self, key: jax.Array, num_samples: int, data_dim: int
     ) -> jax.Array:
-        r"""Samples initial noise $x_T \sim \mathcal{N}(0, I)$."""
+        r"""Samples initial noise (Source at t=0)."""
         return jax.random.normal(key, (num_samples, data_dim))
 
     def sample_from_target_distribution(
         self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
     ) -> tuple[jax.Array, jax.Array]:
-        """Generates samples from the target distribution by solving the reverse chain.
-
-        Iterates backwards from $T-1$ to $0$ using `jax.lax.scan`.
+        """Generates samples by solving the reverse chain from t=0 to t=1.
 
         Args:
             model: The trained Equinox model.
-            key: PRNGKey for the sampling process.
-            num_samples: Number of samples to generate.
-            data_dim: Dimensionality of the data.
+            key: PRNGKey.
+            num_samples: Number of samples.
+            data_dim: Dimensionality.
 
         Returns:
-            A tuple containing:
-                - x_target: The final generated samples ($x_0$).
-                - x_traj: The full trajectory of samples (from $T-1$ down to $0$).
+            (x_final, x_traj)
         """
-        # Start from the source distribution x_T ~ N(0, I)
+        # Start from Source (Noise) at t=0
         x_src = self.sample_from_source_distribution(key, num_samples, data_dim)
 
-        def scan_body(
-            x_t: jax.Array, carry: tuple[jax.Array, jax.Array]
-        ) -> tuple[jax.Array, jax.Array]:
-            t, current_key = carry
-            next_key, subkey = jax.random.split(current_key)
-
-            B = x_t.shape[0]
-            # Split keys for the batch dimension
-            batch_keys = jax.random.split(subkey, B)
-
-            # Vectorize the backward step over the batch
-            x_prev = jax.vmap(
-                self.backward,
-                in_axes=(None, None, 0, 0),  # model: None, t: None, x_t: batch, keys: batch
-            )(model, t, x_t, batch_keys)
-
-            return x_prev, x_prev
-
-        # Define time steps range [T-1, ..., 0]
-        ts = jnp.arange(self.num_transport_steps - 1, -1, -1)
+        # Define time steps range [0, ..., 1]
+        # In unified time, we step forward.
+        dt = 1.0 / self.num_transport_steps
+        ts = jnp.linspace(0.0, 1.0 - dt, self.num_transport_steps)
         keys = jax.random.split(key, self.num_transport_steps)
 
-        # Run the reverse process loop
-        x_target, x_traj = jax.lax.scan(scan_body, x_src, (ts, keys))
-        return x_target, x_traj
+        def scan_body(
+            x_t: jax.Array, step_inputs: tuple[jax.Array, jax.Array]
+        ) -> tuple[jax.Array, jax.Array]:
+            """
+            JAX scan expects: (carry, xs) -> (new_carry, y)
+            In this context: carry = x_t (state), xs = (t, key)
+            The returned value x_next is used as both new_carry and y.
+            """
+            t, current_key = step_inputs
+
+            # Split keys for batch
+            B = x_t.shape[0]
+            batch_keys = jax.random.split(current_key, B)
+
+            # Vectorize the reverse step
+            x_next = jax.vmap(
+                self.reverse,
+                in_axes=(None, None, 0, 0),
+            )(model, t, x_t, batch_keys)
+
+            return x_next, x_next
+
+        # Run the loop
+        x_final, x_traj = jax.lax.scan(scan_body, x_src, (ts, keys))
+
+        # Prepend initial state to trajectory for visualization
+        x_traj_full = jnp.concatenate([x_src[None, ...], x_traj], axis=0)
+
+        return x_final, x_traj_full
