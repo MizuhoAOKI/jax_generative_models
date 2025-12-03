@@ -82,6 +82,9 @@ serves as a compact yet extensible base for experimenting with generative models
     make rerun
     ```
 
+    https://github.com/user-attachments/assets/a5541eed-7a38-4931-ba5e-154278487a13
+
+
 ### Command Arguments
 
 You can replace the placeholders in the commands above with the following options.
