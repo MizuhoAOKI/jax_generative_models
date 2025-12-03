@@ -21,8 +21,8 @@ serves as a compact yet extensible base for experimenting with generative models
 
 |                    |      cat      | moon | swiss-roll |
 | :----------------  | :-------------------------------------: | :-----------------------------------: | :-----------------------------------: |
-| Diffusion (DDPM)   | <img src="./media/ddpm_mlp_cat.gif" width="250"> | <img src="./media/ddpm_mlp_moon.gif" width="250"> | <img src="./media/ddpm_mlp_swiss_roll.gif" width="250"> |
-| Flow Matching      | <img src="./media/flow_matching_mlp_cat.gif" width="250"> | <img src="./media/flow_matching_mlp_moon.gif" width="250"> | <img src="./media/flow_matching_mlp_swiss_roll.gif" width="250"> |
+| Diffusion (DDPM)   | <img src="./media/ddpm_mlp_cat.gif" width="150"> | <img src="./media/ddpm_mlp_moon.gif" width="150"> | <img src="./media/ddpm_mlp_swiss_roll.gif" width="150"> |
+| Flow Matching      | <img src="./media/flow_matching_mlp_cat.gif" width="150"> | <img src="./media/flow_matching_mlp_moon.gif" width="150"> | <img src="./media/flow_matching_mlp_swiss_roll.gif" width="150"> |
 
 ## Getting Started
 
