@@ -80,6 +80,7 @@ serves as a compact yet extensible base for experimenting with generative models
     ```
 
 7. **Visualize training progress**
+
     [Rerun](https://rerun.io/) is a visualization tool that allows you to monitor training progress in real time, or to inspect logged results afterward.
     Run Rerun from another terminal:
     ```bash
