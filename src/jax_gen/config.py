@@ -66,7 +66,7 @@ class GenerateConfig(CommonConfig):
     mode: Literal["generate"] = "generate"
     """This is the generation mode."""
 
-    num_samples: int = 2000
+    num_samples: int = 3000
     """Number of samples to generate."""
 
     output_image_path: Path = Path("outputs/generated.png")
@@ -80,10 +80,10 @@ class AnimateConfig(CommonConfig):
     mode: Literal["animate"] = "animate"
     """Execution mode literal (fixed to 'animate')."""
 
-    num_samples: int = 1000
+    num_samples: int = 3000
     """Number of samples to visualize in the animation."""
 
-    output_video_path: Path = Path("outputs/animation.mp4")
+    output_video_path: Path = Path("outputs/animation.gif")
     """Filesystem path to save the resulting video (.mp4 or .gif)."""
 
     fps: int = 30

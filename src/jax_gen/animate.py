@@ -114,7 +114,12 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
     writer: Union[animation.FFMpegWriter, animation.PillowWriter]
 
     if save_path.suffix == ".mp4":
-        writer = animation.FFMpegWriter(fps=cfg.fps)
+        if animation.FFMpegWriter.isAvailable():
+            writer = animation.FFMpegWriter(fps=cfg.fps)
+        else:
+            logger.warning("FFMpeg is not available. Falling back to Pillow (GIF).")
+            save_path = save_path.with_suffix(".gif")
+            writer = animation.PillowWriter(fps=cfg.fps)
     elif save_path.suffix == ".gif":
         writer = animation.PillowWriter(fps=cfg.fps)
     else:

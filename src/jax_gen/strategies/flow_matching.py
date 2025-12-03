@@ -20,7 +20,7 @@ class FlowMatchingStrategyConfig:
     name: Literal["flow_matching"] = "flow_matching"
     """Strategy identifier."""
 
-    num_transport_steps: int = 100
+    num_transport_steps: int = 50
     """Number of integration steps for the ODE solver."""
 
     base_std: float = 1.0

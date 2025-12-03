@@ -1,5 +1,3 @@
-# src/jax_gen/utils.py
-
 import logging
 from typing import Literal
 

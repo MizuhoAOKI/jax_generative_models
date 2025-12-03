@@ -1,5 +1,3 @@
-# src/jax_gen/tracker.py
-
 from __future__ import annotations
 
 import logging
@@ -109,7 +107,7 @@ class RerunTracker:
             return
 
         # Log Scalar Metrics
-        rr.set_time_sequence("train_step", step)
+        rr.set_time("train_step", sequence=step)
         rr.log("train/loss", rr.Scalars(loss))
 
         # Log Visual Samples (at specified intervals)
@@ -166,7 +164,7 @@ class RerunTracker:
         if colors is None:
             colors = [100, 100, 100]
 
-        rr.set_time_sequence("train_step", step)
+        rr.set_time("train_step", sequence=step)
 
         batch_np = np.array(batch)
         data_dim = self.cfg.dataset.data_dim

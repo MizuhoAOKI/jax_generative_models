@@ -20,7 +20,7 @@ class DDPMStrategyConfig:
     name: Literal["ddpm"] = "ddpm"
     """Strategy identifier."""
 
-    num_transport_steps: int = 1000
+    num_transport_steps: int = 50
     """Number of discrete steps in the diffusion process."""
 
     beta_min: float = 1e-4

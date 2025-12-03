@@ -1,5 +1,3 @@
-# src/jax_gen/strategies/__init__.py
-
 """
 Generative Modeling Strategies Package.
 
