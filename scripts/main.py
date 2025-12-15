@@ -1,5 +1,3 @@
-# src/jax_gen/main.py
-
 import logging
 from typing import Annotated, Union, cast
 

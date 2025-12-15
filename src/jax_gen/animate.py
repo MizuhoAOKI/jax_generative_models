@@ -1,5 +1,3 @@
-# src/jax_gen/animate.py
-
 from __future__ import annotations
 
 import logging
