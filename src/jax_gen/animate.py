@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Union
+from typing import Callable, Union
 
 import equinox as eqx
 import jax
@@ -9,7 +9,7 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
-from jax_gen import models, visualizer
+from jax_gen import data, models, visualizer
 from jax_gen.config import AnimateConfig
 from jax_gen.strategies import create_strategy
 
@@ -19,8 +19,10 @@ logger = logging.getLogger(__name__)
 def animate(cfg: AnimateConfig, key: jax.Array) -> None:
     """Executes the animation pipeline to visualize the generation process.
 
-    This function leverages the shared visualization logic from `visualizer.py`
-    to ensure the animation style matches the static generated images.
+    This function leverages shared visualization logic from `visualizer.py`
+    to ensure the animation style matches static generated images.
+    It supports both Point Cloud (scatter) and Image (grid) datasets via
+    DataType branching.
 
     Args:
         cfg: Animation configuration object.
@@ -28,21 +30,11 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
 
     Raises:
         FileNotFoundError: If the model file is missing.
-        ValueError: If the data dimensionality is not supported (currently only 2D).
     """
     logger.info(f"Starting animation task. Mode: {cfg.mode}")
 
     # -------------------------------------------------------------------------
-    # 1. Validation
-    # -------------------------------------------------------------------------
-    if cfg.dataset.data_dim != 2:
-        raise ValueError(
-            f"Animation is currently only supported for 2D datasets. "
-            f"Got dimensions: {cfg.dataset.data_dim}"
-        )
-
-    # -------------------------------------------------------------------------
-    # 2. Load Model & Strategy
+    # 1. Load Model & Strategy
     # -------------------------------------------------------------------------
     if not cfg.model_path.exists():
         logger.error(f"Model file not found at: {cfg.model_path}")
@@ -56,7 +48,7 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
     strategy = create_strategy(cfg.strategy)
 
     # -------------------------------------------------------------------------
-    # 3. Generate Trajectory
+    # 2. Generate Trajectory
     # -------------------------------------------------------------------------
     logger.info(f"Generating trajectory for {cfg.num_samples} samples...")
     key, subkey = jax.random.split(key)
@@ -77,36 +69,79 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
     logger.info(f"Trajectory captured: {num_frames} frames.")
 
     # -------------------------------------------------------------------------
-    # 4. Create Animation
+    # 3. Configure Animation (Dispatcher)
+    # -------------------------------------------------------------------------
+    logger.info("Setting up animation renderer...")
+
+    # Define init/update functions based on the data type
+    init_fn: Callable[[], list]
+    update_fn: Callable[[int], list]
+
+    match cfg.dataset.data_type:
+        case data.DataType.IMAGE:
+            # Setup for Image Grid
+            fig, _, im = visualizer.setup_image_grid(
+                cfg.vis,
+                initial_data=None,
+                data_dim=cfg.dataset.data_dim,
+                vmax=cfg.dataset.scale,
+            )
+
+            def init_image() -> list:
+                """Initializes with a blank grid."""
+                dummy_batch = np.zeros_like(trajectory_np[0])
+                grid = visualizer.reshape_to_image_grid(dummy_batch, cfg.dataset.data_dim)
+                im.set_data(grid)
+                return [im]
+
+            def update_image(frame_idx: int) -> list:
+                """Updates the grid pixels."""
+                batch_t = trajectory_np[frame_idx]
+                grid = visualizer.reshape_to_image_grid(batch_t, cfg.dataset.data_dim)
+                im.set_data(grid)
+                return [im]
+
+            init_fn = init_image
+            update_fn = update_image
+
+        case data.DataType.POINT_2D:
+            # Setup for Scatter Plot
+            fig, _, scatter = visualizer.setup_point_scatter(cfg.vis, initial_data=None)
+
+            def init_scatter() -> list:
+                """Initializes with an empty scatter plot."""
+                scatter.set_offsets(np.empty((0, 2)))
+                return [scatter]
+
+            def update_scatter(frame_idx: int) -> list:
+                """Updates the scatter points coordinates."""
+                data_t = trajectory_np[frame_idx]
+                scatter.set_offsets(data_t)
+                return [scatter]
+
+            init_fn = init_scatter
+            update_fn = update_scatter
+
+        case _:
+            raise NotImplementedError(
+                f"Animation not supported for data type: {cfg.dataset.data_type}"
+            )
+
+    # -------------------------------------------------------------------------
+    # 4. Render & Save Video
     # -------------------------------------------------------------------------
     save_path = cfg.output_video_path
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Rendering frames...")
-
-    # Reuse the logic from visualizer to ensure consistent styling
-    # We initialize with empty data; the update function will handle the rest.
-    fig, ax, scatter = visualizer.setup_2d_plot(cfg.vis, initial_data=None)
-
-    def init() -> list:
-        """Initializes the animation frame (required for blit=True)."""
-        scatter.set_offsets(np.empty((0, 2)))
-        return [scatter]
-
-    def update(frame_idx: int) -> list:
-        """Updates the scatter plot for a given frame index."""
-        # Get data for the current time step: (Batch, 2)
-        data_t = trajectory_np[frame_idx]
-        scatter.set_offsets(data_t)
-        return [scatter]
-
     anim = animation.FuncAnimation(
-        fig, update, frames=num_frames, init_func=init, blit=True, interval=int(1000 / cfg.fps)
+        fig,
+        update_fn,
+        frames=num_frames,
+        init_func=init_fn,
+        blit=True,
+        interval=int(1000 / cfg.fps),
     )
 
-    # -------------------------------------------------------------------------
-    # 5. Save Video
-    # -------------------------------------------------------------------------
     logger.info(f"Saving animation to {save_path} (FPS={cfg.fps})...")
 
     writer: Union[animation.FFMpegWriter, animation.PillowWriter]

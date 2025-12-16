@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import equinox as eqx
 import jax
@@ -9,6 +10,7 @@ import rerun as rr
 
 from jax_gen import data
 from jax_gen.config import TrainConfig
+from jax_gen.data import DataType
 from jax_gen.strategies import Strategy
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ class RerunTracker:
 
     This class encapsulates all interactions with the Rerun SDK, including
     initialization, metric logging, and converting JAX arrays into Rerun-compatible
-    visualizations (e.g., point clouds).
+    visualizations (e.g., point clouds or images).
 
     Attributes:
         cfg: The training configuration object.
@@ -152,14 +154,14 @@ class RerunTracker:
     ) -> None:
         """Helper method to log a data batch to Rerun.
 
-        Handles data conversion (JAX -> Numpy) and coordinate system adjustments
-        (e.g., flipping Y-axis for correct visual orientation).
+        Handles data conversion (JAX -> Numpy) and switches visualization method
+        based on the dataset type (Point Cloud vs Image).
 
         Args:
             name: The entity path in Rerun (e.g. "train/samples").
-            batch: The data batch to log.
+            batch: The data batch to log. Shape (B, D).
             step: The current training step.
-            colors: RGB list [r, g, b]. Defaults to grey if None.
+            colors: RGB list [r, g, b]. Used for point clouds.
         """
         if colors is None:
             colors = [100, 100, 100]
@@ -167,10 +169,10 @@ class RerunTracker:
         rr.set_time("train_step", sequence=step)
 
         batch_np = np.array(batch)
-        data_dim = self.cfg.dataset.data_dim
+        data_type = self.cfg.dataset.data_type
 
         # --- Case A: 2D Point Cloud ---
-        if data_dim == 2:
+        if data_type == DataType.POINT_2D:
             # Create a copy to avoid mutating the original batch
             points = batch_np.copy()
 
@@ -186,8 +188,57 @@ class RerunTracker:
                     colors=colors,
                 ),
             )
-        else:
-            # Fallback for unsupported dimensions
-            logger.warning(
-                f"No Rerun implementation for data dimension: {data_dim}. Skipping log for {name}."
+
+        # --- Case B: Image (e.g. MNIST) ---
+        elif data_type == DataType.IMAGE:
+            # Retrieve shape from config, e.g. (1, 28, 28)
+            # Flattened batch (B, 784) -> Reshaped (B, C, H, W)
+            shape = self.cfg.dataset.shape
+            batch_reshaped = batch_np.reshape(-1, *shape)
+
+            # Create a grid of images for visualization
+            grid_image = self._make_image_grid(batch_reshaped)
+
+            rr.log(
+                name,
+                rr.Image(grid_image),
             )
+
+        else:
+            logger.warning(
+                f"No Rerun implementation for data type: {data_type}. Skipping log for {name}."
+            )
+
+    def _make_image_grid(self, images: np.ndarray) -> np.ndarray:
+        """Combines a batch of images into a single grid image.
+
+        Args:
+            images: Batch of images with shape (B, C, H, W).
+                    Assumes pixel values are in [0, 1] or roughly in that range.
+
+        Returns:
+            A single numpy array (GridH, GridW, C) or (GridH, GridW).
+        """
+        b, c, h, w = images.shape
+
+        # Calculate grid dimensions (approx square)
+        grid_cols = int(math.ceil(math.sqrt(b)))
+        grid_rows = int(math.ceil(b / grid_cols))
+
+        # Create empty canvas
+        grid = np.zeros((grid_rows * h, grid_cols * w, c), dtype=images.dtype)
+
+        for i in range(b):
+            row = i // grid_cols
+            col = i % grid_cols
+
+            # Transpose (C, H, W) -> (H, W, C) for assignment
+            img = images[i].transpose(1, 2, 0)
+
+            grid[row * h : (row + 1) * h, col * w : (col + 1) * w, :] = img
+
+        # If 1 channel (Grayscale), squeeze to (H, W) for Rerun compatibility
+        if c == 1:
+            grid = grid.squeeze(axis=-1)
+
+        return grid

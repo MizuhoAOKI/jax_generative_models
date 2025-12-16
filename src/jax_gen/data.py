@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Union
@@ -11,10 +12,25 @@ import jax.numpy as jnp
 import numpy as np
 import tyro
 from PIL import Image
-from sklearn.datasets import make_moons, make_swiss_roll
+from sklearn.datasets import fetch_openml, make_moons, make_swiss_roll
 
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
+
+# --------------------------------------------------------
+# Type Definitions
+# --------------------------------------------------------
+
+
+class DataType(str, Enum):
+    """Defines the semantic type of the dataset."""
+
+    POINT_2D = "point_2d"
+    """2D Point cloud data (2,)."""
+
+    IMAGE = "image"
+    """Image data (C, H, W)."""
+
 
 # --------------------------------------------------------
 # Configuration Definitions
@@ -37,6 +53,14 @@ class GaussianMixtureConfig:
     noise_std: float = 0.5
     """Standard deviation of the Gaussian noise around each center."""
 
+    @property
+    def data_type(self) -> DataType:
+        return DataType.POINT_2D
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (2,)
+
 
 @dataclass(frozen=True)
 class CatConfig:
@@ -53,6 +77,14 @@ class CatConfig:
 
     noise_scale: float = 0.005
     """Standard deviation of noise added to the points (jitter)."""
+
+    @property
+    def data_type(self) -> DataType:
+        return DataType.POINT_2D
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (2,)
 
 
 @dataclass(frozen=True)
@@ -71,6 +103,14 @@ class MoonConfig:
     scale: float = 1.0
     """Rescaling factor to fit the data within approximately [-scale, scale]."""
 
+    @property
+    def data_type(self) -> DataType:
+        return DataType.POINT_2D
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (2,)
+
 
 @dataclass(frozen=True)
 class SwissRollConfig:
@@ -88,6 +128,36 @@ class SwissRollConfig:
     scale: float = 0.15
     """Rescaling factor to fit the data within approximately [-scale, scale]."""
 
+    @property
+    def data_type(self) -> DataType:
+        return DataType.POINT_2D
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (2,)
+
+
+@dataclass(frozen=True)
+class MnistConfig:
+    """Configuration for the MNIST dataset."""
+
+    name: Literal["mnist"] = "mnist"
+    """The dataset identifier."""
+
+    data_dim: int = 784
+    """Dimensionality of the data (28x28 flattened)."""
+
+    scale: float = 1.0
+    """Scaling factor applied after normalizing pixel values to [0, 1]."""
+
+    @property
+    def data_type(self) -> DataType:
+        return DataType.IMAGE
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (1, 28, 28)
+
 
 # Union type for Tyro CLI parsing.
 # This enables automatic subcommand generation (e.g., `python main.py --dataset:cat ...`).
@@ -96,6 +166,7 @@ DatasetConfig = Union[
     Annotated[CatConfig, tyro.conf.subcommand("cat")],
     Annotated[MoonConfig, tyro.conf.subcommand("moon")],
     Annotated[SwissRollConfig, tyro.conf.subcommand("swiss-roll")],
+    Annotated[MnistConfig, tyro.conf.subcommand("mnist")],
 ]
 
 
@@ -168,6 +239,23 @@ def _load_cat_geometry_cached(scale: float) -> jax.Array:
     coords = coords * scale
 
     return jnp.array(coords, dtype=jnp.float32)
+
+
+@lru_cache(maxsize=1)
+def _load_mnist_cached() -> jax.Array:
+    """Loads the MNIST dataset using sklearn and caches the result in memory.
+
+    Note:
+        On the first run, this will download the dataset to ~/scikit_learn_data.
+        This uses `fetch_openml` to avoid adding heavy dependencies like torch/tf.
+
+    Returns:
+        A JAX array of shape (70000, 784) containing the raw pixel data.
+    """
+    logger.debug("Loading MNIST dataset (this may take a while on first run)...")
+    # as_frame=False ensures we get a numpy array instead of pandas DataFrame
+    X, _ = fetch_openml("mnist_784", version=1, return_X_y=True, as_frame=False, parser="auto")
+    return jnp.array(X, dtype=jnp.float32)
 
 
 # --------------------------------------------------------
@@ -286,6 +374,30 @@ def _get_swiss_roll_batch(key: jax.Array, config: SwissRollConfig, batch_size: i
     return jnp.array(x_np, dtype=jnp.float32)
 
 
+def _get_mnist_batch(key: jax.Array, config: MnistConfig, batch_size: int) -> jax.Array:
+    """Generates a batch from the MNIST dataset.
+
+    Args:
+        key: JAX PRNGKey.
+        config: MNIST dataset configuration.
+        batch_size: Number of samples to generate.
+
+    Returns:
+        Sampled batch of shape (batch_size, 784).
+    """
+    # Retrieve cached full dataset
+    data = _load_mnist_cached()
+
+    # Sample random indices
+    idx = jax.random.randint(key, (batch_size,), 0, data.shape[0])
+    batch = data[idx]
+
+    # Normalize to [0, 1] and apply scale
+    batch = (batch / 255.0) * config.scale
+
+    return batch
+
+
 # --------------------------------------------------------
 # Public Dispatcher
 # --------------------------------------------------------
@@ -314,5 +426,7 @@ def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> jax.Arr
             return _get_moon_batch(key, config, batch_size)
         case SwissRollConfig():
             return _get_swiss_roll_batch(key, config, batch_size)
+        case MnistConfig():
+            return _get_mnist_batch(key, config, batch_size)
         case _:
             raise ValueError(f"Unknown config type: {type(config)}")
