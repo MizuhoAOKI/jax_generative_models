@@ -14,6 +14,7 @@ dependencies = [
     "matplotlib>=3.10.7",
     "optax>=0.2.6",
     "optuna>=4.6.0",
+    "pandas>=2.3.3",
     "qpax>=0.0.9",
     "rerun-sdk==0.23",
     "rich>=14.2.0",

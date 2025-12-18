@@ -24,6 +24,7 @@ class Strategy(Protocol):
         self,
         model: eqx.Module,
         x: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """
@@ -32,6 +33,7 @@ class Strategy(Protocol):
         Args:
             model: Equinox model.
             x: One clean data sample, corresponds to data at t=1.
+            cond: Optional conditioning information (e.g., class labels).
             key: PRNGKey for stochastic sampling.
 
         Returns:
@@ -57,7 +59,12 @@ class Strategy(Protocol):
         ...
 
     def sample_from_target_distribution(
-        self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
+        self,
+        model: eqx.Module,
+        key: jax.Array,
+        num_samples: int,
+        data_dim: int,
+        cond: jax.Array | None = None,
     ) -> tuple[jax.Array, jax.Array]:
         """
         Sample data from the target distribution (Data Distribution at t=1).
@@ -68,6 +75,7 @@ class Strategy(Protocol):
             key: PRNGKey.
             num_samples: Number of samples.
             data_dim: Dimensionality.
+            cond: Optional conditioning batch of shape (num_samples, ...).
 
         Returns:
             tuple containing:
@@ -103,6 +111,7 @@ class Strategy(Protocol):
         model: eqx.Module,
         t: jax.Array,
         x_t: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """
@@ -113,6 +122,7 @@ class Strategy(Protocol):
             model: Equinox model.
             t:    Current time step or continuous time.
             x_t:  State at time t.
+            cond: Optional conditioning information.
             key:  PRNGKey for any stochastic sampling.
 
         Returns:

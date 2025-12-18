@@ -19,10 +19,10 @@ By abstracting these methods behind a common "strategy" interface, the project h
 structural similarities and differences. With Tyro for configuration and Rerun for visualization, it
 serves as a compact yet extensible base for experimenting with generative models.
 
-|                    |      cat      | moon | swiss-roll |
-| :----------------  | :-------------------------------------: | :-----------------------------------: | :-----------------------------------: |
-| Diffusion (DDPM)   | <img src="./media/ddpm_mlp_cat.gif" width="150"> | <img src="./media/ddpm_mlp_moon.gif" width="150"> | <img src="./media/ddpm_mlp_swiss_roll.gif" width="150"> |
-| Flow Matching      | <img src="./media/flow_matching_mlp_cat.gif" width="150"> | <img src="./media/flow_matching_mlp_moon.gif" width="150"> | <img src="./media/flow_matching_mlp_swiss_roll.gif" width="150"> |
+|                    |      cat      | moon | swiss-roll | mnist |
+| :----------------  | :-------------------------------------: | :-----------------------------------: | :-----------------------------------: | :-----------------------------------: |
+| Diffusion (DDPM)   | <img src="./media/ddpm_mlp_cat.gif" width="150"> | <img src="./media/ddpm_mlp_moon.gif" width="150"> | <img src="./media/ddpm_mlp_swiss_roll.gif" width="150"> | <img src="./media/ddpm_unet_mnist.gif" width="150"> |
+| Flow Matching      | <img src="./media/flow_matching_mlp_cat.gif" width="150"> | <img src="./media/flow_matching_mlp_moon.gif" width="150"> | <img src="./media/flow_matching_mlp_swiss_roll.gif" width="150"> | <img src="./media/flow_matching_unet_mnist.gif" width="150"> |
 
 ## Getting Started
 
@@ -98,14 +98,31 @@ If omitted, each argument falls back to its default value.
 | Placeholder         | Options                               | Default | Description                         |
 | :------------------ | :------------------------------------- | :------ | :----------------------------------- |
 | `<STRATEGY_NAME>`   | `ddpm`, `flow-matching`                | `ddpm`  | Generative modeling strategy.        |
-| `<MODEL_NAME>`      | `mlp`, `resnet`                        | `mlp`   | Model architecture to use.           |
-| `<DATASET_NAME>`    | `cat`, `gaussian-mixture`, `moon`, `swiss-roll` | `cat` | Target dataset for training/generation. |
+| `<MODEL_NAME>`      | `mlp`, `resnet`, `unet`                | `mlp`   | Model architecture to use.           |
+| `<DATASET_NAME>`    | `cat`, `gaussian-mixture`, `moon`, `swiss-roll`, `mnist` | `cat` | Target dataset for training/generation. |
 
 For example, to train a DDPM with an MLP on the "cat" dataset (the default configuration), run:
 
 ```bash
 uv run scripts/main.py train strategy:ddpm model:mlp dataset:cat
 ```
+
+The `unet` model is specifically designed for image data like `mnist`, so it should be used with image-based datasets.
+The following command shows a recommended set of parameters for training `unet` on `mnist` using the `flow-matching` strategy:
+
+```bash
+uv run scripts/main.py train --batch-size 128 --vis.num-vis-samples 256 strategy:flow-matching --strategy.num-transport-steps 100 model:unet dataset:mnist
+```
+
+You can then generate samples conditioned on a specific digit.
+For example, the following command generates 100 images of the digit "5":
+
+```bash
+uv run scripts/main.py generate --condition 5 --num-samples 100 strategy:flow-matching model:unet dataset:mnist
+```
+
+If you omit the `--condition` option, the model will generate random digits from 0 to 9.
+
 
 ## References
 - Ho et al. [*Denoising Diffusion Probabilistic Models.*](https://arxiv.org/abs/2006.11239) 2020.

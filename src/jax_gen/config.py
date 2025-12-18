@@ -58,6 +58,9 @@ class TrainConfig(CommonConfig):
     log_interval: int = 100
     """Interval (in steps) for logging training progress."""
 
+    cond_dropout_rate: float = 0.1
+    """Probability of dropping condition labels for Classifier-Free Guidance (CFG)."""
+
 
 @dataclass
 class GenerateConfig(CommonConfig):
@@ -71,6 +74,17 @@ class GenerateConfig(CommonConfig):
 
     output_image_path: Path = Path("outputs/generated.png")
     """Path to save the generated output image."""
+
+    # --- Conditioning Options ---
+
+    condition: int | None = None
+    """Fixed condition value (e.g., class label) to generate."""
+
+    condition_from_idx: int | None = None
+    """Index of the dataset sample to use as a condition."""
+
+    condition_from_file: Path | None = None
+    """Path to a file containing the condition data."""
 
 
 @dataclass
@@ -88,3 +102,14 @@ class AnimateConfig(CommonConfig):
 
     fps: int = 30
     """Frames per second for the video (determines playback speed)."""
+
+    # --- Conditioning Options ---
+
+    condition: int | None = None
+    """Fixed condition value (e.g., class label) to generate."""
+
+    condition_from_idx: int | None = None
+    """Index of the dataset sample to use as a condition."""
+
+    condition_from_file: Path | None = None
+    """Path to a file containing the condition data."""

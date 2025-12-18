@@ -52,7 +52,8 @@ class DummyModel(eqx.Module):
     Preserves input shape and allows checking gradient flow.
     """
 
-    def __call__(self, t: jax.Array, x: jax.Array) -> jax.Array:
+    # The model accepts the 'cond' argument to conform to the Strategy protocol interface.
+    def __call__(self, t: jax.Array, x: jax.Array, cond: jax.Array | None = None) -> jax.Array:
         # Return output with same shape as input to maintain graph connectivity
         # t is scalar, x is (data_dim,)
         return x * (1.0 - t) + 0.1
@@ -123,8 +124,9 @@ def test_loss_fn_execution(
     """Ensures the loss function executes without errors and returns a scalar."""
     x_data = jax.random.normal(key, (data_dim,))
 
-    # Check JIT compatibility
-    loss_fn_jit = jax.jit(strategy.loss_fn)
+    # Check JIT compatibility.
+    # We pass 'None' for the 'cond' argument to test the unconditional baseline.
+    loss_fn_jit = jax.jit(lambda m, x, k: strategy.loss_fn(m, x, None, k))
     loss = loss_fn_jit(dummy_model, x_data, key)
 
     # Loss must be a 0-dim scalar
@@ -145,9 +147,12 @@ def test_generation_loop_trajectory(
     Checks if `sample_from_target_distribution` correctly integrates/denoises
     from t=0 to t=1.
     """
-    # Execute with JIT
+    # Execute with JIT.
+    # Pass 'None' for the 'cond' argument to evaluate standard unconditional generation.
     sample_fn = jax.jit(
-        lambda k: strategy.sample_from_target_distribution(dummy_model, k, batch_size, data_dim)
+        lambda k: strategy.sample_from_target_distribution(
+            dummy_model, k, batch_size, data_dim, None
+        )
     )
     x_final, x_traj = sample_fn(key)
 
@@ -158,8 +163,6 @@ def test_generation_loop_trajectory(
     # Trajectory includes initial state (t=0), so length is steps + 1
     if hasattr(strategy, "num_transport_steps"):
         expected_steps = strategy.num_transport_steps  # type: ignore
-    elif hasattr(strategy, "num_steps"):  # Flow Matching specific
-        expected_steps = strategy.num_steps  # type: ignore
     else:
         # Fallback for generic strategy
         expected_steps = x_traj.shape[0] - 1
@@ -184,10 +187,11 @@ def test_vmap_compatibility(
     x_batch = jax.random.normal(key, (batch_size, data_dim))
     keys = jax.random.split(key, batch_size)
 
-    # loss_fn is designed for single samples, so we vmap it for batches
-    batch_loss_fn = jax.vmap(strategy.loss_fn, in_axes=(None, 0, 0))
+    # loss_fn is designed for single samples, so we vmap it for batches.
+    # Use in_axes=(None, 0, None, 0) to handle the model and the None condition.
+    batch_loss_fn = jax.vmap(strategy.loss_fn, in_axes=(None, 0, None, 0))
 
-    losses = batch_loss_fn(dummy_model, x_batch, keys)
+    losses = batch_loss_fn(dummy_model, x_batch, None, keys)
 
     assert losses.shape == (batch_size,)
     assert not jnp.isnan(losses).any()

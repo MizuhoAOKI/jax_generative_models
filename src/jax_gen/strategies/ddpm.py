@@ -87,6 +87,7 @@ class DDPMStrategy(Strategy):
         self,
         model: eqx.Module,
         x: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """Computes the DDPM loss for a single sample.
@@ -94,6 +95,7 @@ class DDPMStrategy(Strategy):
         Args:
             model: The Equinox model to train.
             x: A single clean data sample (t=1).
+            cond: Optional conditioning information.
             key: PRNGKey.
 
         Returns:
@@ -113,8 +115,7 @@ class DDPMStrategy(Strategy):
         x_t, eps_true = self.forward(t, x, key_noise)
 
         # Predict noise. The model receives normalized time t.
-        # Note: If the model expects specific embeddings, ensure t is consistent.
-        eps_pred = model(t, x_t)  # type: ignore # model is Callable
+        eps_pred = model(t, x_t, cond)  # type: ignore # model is Callable
 
         # Calculate Mean Squared Error
         loss = jnp.mean((eps_pred - eps_true) ** 2)
@@ -157,6 +158,7 @@ class DDPMStrategy(Strategy):
         model: eqx.Module,
         t: jax.Array,
         x_t: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """Performs a single generation step: Moves t towards 1 (Data).
@@ -167,6 +169,7 @@ class DDPMStrategy(Strategy):
             model: The trained Equinox model.
             t: Current time in [0, 1].
             x_t: Current state.
+            cond: Optional conditioning information.
             key: PRNGKey for stochastic sampling.
 
         Returns:
@@ -189,7 +192,7 @@ class DDPMStrategy(Strategy):
         )
 
         # 1. Predict noise
-        eps_pred = model(t, x_t)  # type: ignore # model is Callable
+        eps_pred = model(t, x_t, cond)  # type: ignore # model is Callable
 
         # 2. Calculate mean (mu_theta)
         coef1 = 1.0 / jnp.sqrt(alpha_t)
@@ -216,7 +219,12 @@ class DDPMStrategy(Strategy):
         return jax.random.normal(key, (num_samples, data_dim))
 
     def sample_from_target_distribution(
-        self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
+        self,
+        model: eqx.Module,
+        key: jax.Array,
+        num_samples: int,
+        data_dim: int,
+        cond: jax.Array | None = None,
     ) -> tuple[jax.Array, jax.Array]:
         """Generates samples by solving the reverse chain from t=0 to t=1.
 
@@ -225,6 +233,7 @@ class DDPMStrategy(Strategy):
             key: PRNGKey.
             num_samples: Number of samples.
             data_dim: Dimensionality.
+            cond: Optional conditioning batch.
 
         Returns:
             (x_final, x_traj)
@@ -255,8 +264,8 @@ class DDPMStrategy(Strategy):
             # Vectorize the reverse step
             x_next = jax.vmap(
                 self.reverse,
-                in_axes=(None, None, 0, 0),
-            )(model, t, x_t, batch_keys)
+                in_axes=(None, None, 0, 0, 0),
+            )(model, t, x_t, cond, batch_keys)
 
             return x_next, x_next
 
