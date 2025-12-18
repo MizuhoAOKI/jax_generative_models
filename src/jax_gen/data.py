@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -7,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal, Union
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -30,6 +32,34 @@ class DataType(str, Enum):
 
     IMAGE = "image"
     """Image data (C, H, W)."""
+
+
+class ConditionType(str, Enum):
+    """Defines the type of conditioning used by the dataset."""
+
+    NONE = "none"
+    """No conditioning."""
+
+    DISCRETE = "discrete"
+    """Discrete class labels (e.g., MNIST digits)."""
+
+    CONTINUOUS = "continuous"
+    """Continuous vectors (e.g., robotics goal states)."""
+
+
+class Batch(eqx.Module):
+    """Standard data container for generative tasks.
+
+    Inheriting from eqx.Module automatically registers it as a JAX Pytree,
+    allowing it to be passed into JIT-compiled functions.
+    It functions as a frozen dataclass by default.
+    """
+
+    x: jax.Array
+    """Main data tensor (e.g., images or points)."""
+
+    cond: jax.Array | None = None
+    """Conditioning data (e.g., class labels or context vectors)."""
 
 
 # --------------------------------------------------------
@@ -58,6 +88,10 @@ class GaussianMixtureConfig:
         return DataType.POINT_2D
 
     @property
+    def condition_type(self) -> ConditionType:
+        return ConditionType.NONE
+
+    @property
     def shape(self) -> tuple[int, ...]:
         return (2,)
 
@@ -81,6 +115,10 @@ class CatConfig:
     @property
     def data_type(self) -> DataType:
         return DataType.POINT_2D
+
+    @property
+    def condition_type(self) -> ConditionType:
+        return ConditionType.NONE
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -108,6 +146,10 @@ class MoonConfig:
         return DataType.POINT_2D
 
     @property
+    def condition_type(self) -> ConditionType:
+        return ConditionType.NONE
+
+    @property
     def shape(self) -> tuple[int, ...]:
         return (2,)
 
@@ -133,6 +175,10 @@ class SwissRollConfig:
         return DataType.POINT_2D
 
     @property
+    def condition_type(self) -> ConditionType:
+        return ConditionType.NONE
+
+    @property
     def shape(self) -> tuple[int, ...]:
         return (2,)
 
@@ -153,6 +199,15 @@ class MnistConfig:
     @property
     def data_type(self) -> DataType:
         return DataType.IMAGE
+
+    @property
+    def condition_type(self) -> ConditionType:
+        return ConditionType.DISCRETE
+
+    @property
+    def num_classes(self) -> int:
+        """Number of classes (digits 0-9)."""
+        return 10
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -242,7 +297,7 @@ def _load_cat_geometry_cached(scale: float) -> jax.Array:
 
 
 @lru_cache(maxsize=1)
-def _load_mnist_cached() -> jax.Array:
+def _load_mnist_cached() -> tuple[jax.Array, jax.Array]:
     """Loads the MNIST dataset using sklearn and caches the result in memory.
 
     Note:
@@ -250,12 +305,19 @@ def _load_mnist_cached() -> jax.Array:
         This uses `fetch_openml` to avoid adding heavy dependencies like torch/tf.
 
     Returns:
-        A JAX array of shape (70000, 784) containing the raw pixel data.
+        A tuple of (data, targets).
+        data: shape (70000, 784), dtype float32
+        targets: shape (70000,), dtype int32
     """
     logger.debug("Loading MNIST dataset (this may take a while on first run)...")
     # as_frame=False ensures we get a numpy array instead of pandas DataFrame
-    X, _ = fetch_openml("mnist_784", version=1, return_X_y=True, as_frame=False, parser="auto")
-    return jnp.array(X, dtype=jnp.float32)
+    # fetch_openml returns targets as object (string) array by default.
+    X, y = fetch_openml("mnist_784", version=1, return_X_y=True, as_frame=False, parser="auto")
+
+    # Explicitly convert the object array to int32 numpy array BEFORE creating JAX array.
+    y_int = np.asarray(y, dtype=np.int32)
+
+    return jnp.array(X, dtype=jnp.float32), jnp.array(y_int)
 
 
 # --------------------------------------------------------
@@ -265,7 +327,7 @@ def _load_mnist_cached() -> jax.Array:
 
 def _get_gaussian_mixture_batch(
     key: jax.Array, config: GaussianMixtureConfig, batch_size: int
-) -> jax.Array:
+) -> Batch:
     """Generates a batch from a 4-component Gaussian Mixture Model.
 
     Args:
@@ -286,10 +348,10 @@ def _get_gaussian_mixture_batch(
 
     # Add Gaussian noise
     noise = jax.random.normal(k2, (batch_size, 2)) * config.noise_std
-    return base + noise
+    return Batch(x=base + noise)
 
 
-def _get_cat_batch(key: jax.Array, config: CatConfig, batch_size: int) -> jax.Array:
+def _get_cat_batch(key: jax.Array, config: CatConfig, batch_size: int) -> Batch:
     """Generates a batch of points sampled from the cat image geometry.
 
     Args:
@@ -311,10 +373,10 @@ def _get_cat_batch(key: jax.Array, config: CatConfig, batch_size: int) -> jax.Ar
 
     # Add small Gaussian noise (jitter) to avoid discrete grid artifacts
     noise = jax.random.normal(k2, base.shape) * config.noise_scale
-    return base + noise
+    return Batch(x=base + noise)
 
 
-def _get_moon_batch(key: jax.Array, config: MoonConfig, batch_size: int) -> jax.Array:
+def _get_moon_batch(key: jax.Array, config: MoonConfig, batch_size: int) -> Batch:
     """Generates a batch from the 'Two Moons' dataset using scikit-learn.
 
     Note:
@@ -340,10 +402,10 @@ def _get_moon_batch(key: jax.Array, config: MoonConfig, batch_size: int) -> jax.
     x_np = x_np - 0.5
     x_np = x_np * config.scale
 
-    return jnp.array(x_np, dtype=jnp.float32)
+    return Batch(x=jnp.array(x_np, dtype=jnp.float32))
 
 
-def _get_swiss_roll_batch(key: jax.Array, config: SwissRollConfig, batch_size: int) -> jax.Array:
+def _get_swiss_roll_batch(key: jax.Array, config: SwissRollConfig, batch_size: int) -> Batch:
     """Generates a batch from the 'Swiss Roll' dataset using scikit-learn.
 
     Note:
@@ -371,10 +433,10 @@ def _get_swiss_roll_batch(key: jax.Array, config: SwissRollConfig, batch_size: i
     x_np = x_np - jnp.mean(x_np, axis=0)
     x_np = x_np * config.scale
 
-    return jnp.array(x_np, dtype=jnp.float32)
+    return Batch(x=jnp.array(x_np, dtype=jnp.float32))
 
 
-def _get_mnist_batch(key: jax.Array, config: MnistConfig, batch_size: int) -> jax.Array:
+def _get_mnist_batch(key: jax.Array, config: MnistConfig, batch_size: int) -> Batch:
     """Generates a batch from the MNIST dataset.
 
     Args:
@@ -386,24 +448,25 @@ def _get_mnist_batch(key: jax.Array, config: MnistConfig, batch_size: int) -> ja
         Sampled batch of shape (batch_size, 784).
     """
     # Retrieve cached full dataset
-    data = _load_mnist_cached()
+    data, targets = _load_mnist_cached()
 
     # Sample random indices
     idx = jax.random.randint(key, (batch_size,), 0, data.shape[0])
-    batch = data[idx]
+    batch_x = data[idx]
+    batch_y = targets[idx]
 
     # Normalize to [0, 1] and apply scale
-    batch = (batch / 255.0) * config.scale
+    batch_x = (batch_x / 255.0) * config.scale
 
-    return batch
+    return Batch(x=batch_x, cond=batch_y)
 
 
 # --------------------------------------------------------
-# Public Dispatcher
+# Public Dispatcher & Utilities
 # --------------------------------------------------------
 
 
-def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> jax.Array:
+def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> Batch:
     """Dispatches generation to the correct specific function based on config type.
 
     Args:
@@ -412,7 +475,7 @@ def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> jax.Arr
         batch_size: Number of samples to generate.
 
     Returns:
-        A JAX array containing the data batch with shape (batch_size, data_dim).
+        A Batch object containing the data and optional conditions.
 
     Raises:
         ValueError: If the provided configuration type is unknown.
@@ -430,3 +493,76 @@ def get_batch(key: jax.Array, config: DatasetConfig, batch_size: int) -> jax.Arr
             return _get_mnist_batch(key, config, batch_size)
         case _:
             raise ValueError(f"Unknown config type: {type(config)}")
+
+
+def get_num_classes(config: DatasetConfig) -> int | None:
+    """Retrieves the number of classes based on the dataset conditioning type.
+
+    This explicitly uses the config type (match/case) to provide type-safe access
+    to `num_classes`, satisfying static analysis tools like Mypy.
+
+    Args:
+        config: The dataset configuration.
+
+    Returns:
+        The number of classes if the dataset is DISCRETE, otherwise None.
+    """
+    match config:
+        case MnistConfig():
+            # MnistConfig is explicitly defined to have num_classes
+            return config.num_classes
+        case _:
+            # Other configs do not have num_classes
+            return None
+
+
+def apply_cfg_dropout(
+    batch: Batch, key: jax.Array, dropout_prob: float, config: DatasetConfig
+) -> Batch:
+    """Applies Classifier-Free Guidance (CFG) dropout logic based on dataset type.
+
+    Encapsulates the logic for 'dropping' a condition. For discrete data, this
+    usually means replacing the label with a 'null token' index. For continuous data,
+    this usually means masking the vector with zeros.
+
+    Args:
+        batch: The input data batch.
+        key: JAX PRNGKey for mask generation.
+        dropout_prob: Probability of dropping the condition (0.0 to 1.0).
+        config: The dataset configuration (determines the condition type).
+
+    Returns:
+        A new Batch object with conditions potentially masked.
+    """
+    # 1. Early exit if no conditions or no dropout
+    if config.condition_type == ConditionType.NONE or batch.cond is None or dropout_prob <= 0.0:
+        return batch
+
+    # 2. Generate dropout mask
+    # True = Drop (Replace with Null), False = Keep
+    B = batch.x.shape[0]
+    mask = jax.random.bernoulli(key, p=dropout_prob, shape=(B,))
+
+    new_cond = batch.cond
+
+    # 3. Apply mask based on condition type (Explicit Usage of Enum)
+    match config.condition_type:
+        case ConditionType.DISCRETE:
+            num_classes = get_num_classes(config)
+            if num_classes is not None:
+                new_cond = jnp.where(mask, num_classes, batch.cond)
+            else:
+                logger.warning(
+                    f"Dataset {config.name} is DISCRETE but missing 'num_classes'. CFG skipped."
+                )
+
+        case ConditionType.CONTINUOUS:
+            # For continuous vectors, replace with zeros (Zero Masking)
+            # Reshape mask to broadcast: (B,) -> (B, 1, ...)
+            mask_reshaped = mask.reshape((B,) + (1,) * (batch.cond.ndim - 1))
+            new_cond = jnp.where(mask_reshaped, jnp.zeros_like(batch.cond), batch.cond)
+
+        case _:
+            pass
+
+    return dataclasses.replace(batch, cond=new_cond)

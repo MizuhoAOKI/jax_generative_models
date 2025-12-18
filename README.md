@@ -114,6 +114,16 @@ The following command shows a recommended set of parameters for training `unet` 
 uv run scripts/main.py train --batch-size 128 --vis.num-vis-samples 256 strategy:flow-matching --strategy.num-transport-steps 100 model:unet dataset:mnist
 ```
 
+You can then generate samples conditioned on a specific digit.
+For example, the following command generates 100 images of the digit "5":
+
+```bash
+uv run scripts/main.py generate --condition 5 --num-samples 100 strategy:flow-matching model:unet dataset:mnist
+```
+
+If you omit the `--condition` option, the model will generate random digits from 0 to 9.
+
+
 ## References
 - Ho et al. [*Denoising Diffusion Probabilistic Models.*](https://arxiv.org/abs/2006.11239) 2020.
 - Lipman et al. [*Flow Matching for Generative Modeling.*](https://arxiv.org/abs/2210.02747) 2023.

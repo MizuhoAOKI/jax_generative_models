@@ -63,6 +63,7 @@ class FlowMatchingStrategy(Strategy):
         self,
         model: eqx.Module,
         x: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """Computes the Flow Matching loss for a single sample.
@@ -70,6 +71,7 @@ class FlowMatchingStrategy(Strategy):
         Args:
             model: The Equinox model.
             x: A single clean data sample (t=1).
+            cond: Optional conditioning information.
             key: PRNGKey.
 
         Returns:
@@ -89,7 +91,7 @@ class FlowMatchingStrategy(Strategy):
         x_t, target_v = self.forward(t, x, key_base)
 
         # 3. Predict velocity using the model
-        v_pred = model(t, x_t)  # type: ignore # model is Callable
+        v_pred = model(t, x_t, cond)  # type: ignore # model is Callable
 
         # 4. Calculate Mean Squared Error
         loss = jnp.mean((v_pred - target_v) ** 2)
@@ -126,6 +128,7 @@ class FlowMatchingStrategy(Strategy):
         model: eqx.Module,
         t: jax.Array,
         x_t: jax.Array,
+        cond: jax.Array | None,
         key: jax.Array,
     ) -> jax.Array:
         """Performs a single ODE integration step: Moves t towards 1 (Data).
@@ -134,6 +137,7 @@ class FlowMatchingStrategy(Strategy):
             model: The trained Equinox model.
             t: Current time.
             x_t: Current state.
+            cond: Optional conditioning information.
             key: PRNGKey (unused for deterministic ODE).
 
         Returns:
@@ -142,7 +146,7 @@ class FlowMatchingStrategy(Strategy):
         del key  # Flow Matching reverse step is deterministic
 
         # Predict velocity
-        v_pred = model(t, x_t)  # type: ignore # model is Callable
+        v_pred = model(t, x_t, cond)  # type: ignore # model is Callable
 
         # Forward Euler Integration
         dt = 1.0 / float(self.num_transport_steps)
@@ -157,7 +161,12 @@ class FlowMatchingStrategy(Strategy):
         return jax.random.normal(key, (num_samples, data_dim)) * self.base_std
 
     def sample_from_target_distribution(
-        self, model: eqx.Module, key: jax.Array, num_samples: int, data_dim: int
+        self,
+        model: eqx.Module,
+        key: jax.Array,
+        num_samples: int,
+        data_dim: int,
+        cond: jax.Array | None = None,
     ) -> tuple[jax.Array, jax.Array]:
         """Generates samples by solving the probability flow ODE from t=0 to t=1.
 
@@ -166,6 +175,7 @@ class FlowMatchingStrategy(Strategy):
             key: PRNGKey.
             num_samples: Number of samples.
             data_dim: Dimensionality.
+            cond: Optional conditioning batch.
 
         Returns:
             (x_final, x_traj)
@@ -195,10 +205,11 @@ class FlowMatchingStrategy(Strategy):
             batch_keys = jax.random.split(current_key, B)
 
             # Vectorize the integration step
+            # Note: We close over `cond` which is constant for the trajectory
             x_next = jax.vmap(
                 self.reverse,
-                in_axes=(None, None, 0, 0),
-            )(model, t, x_t, batch_keys)
+                in_axes=(None, None, 0, 0, 0),
+            )(model, t, x_t, cond, batch_keys)
 
             return x_next, x_next
 

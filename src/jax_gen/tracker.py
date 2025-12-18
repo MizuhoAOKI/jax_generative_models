@@ -79,11 +79,12 @@ class RerunTracker:
         if not self._enabled:
             return
 
+        # Fetch a batch (returns Batch object with .x and .cond)
         gt_batch = data.get_batch(key, self.cfg.dataset, self.cfg.batch_size)
 
         self._log_batch(
             name="ground_truth/data_samples",
-            batch=gt_batch,
+            batch=gt_batch.x,
             step=0,
             colors=[255, 75, 0],  # Red
         )
@@ -131,11 +132,21 @@ class RerunTracker:
             strategy: Strategy used to sample from the target distribution.
             key: JAX PRNGKey.
         """
+        key, cond_key = jax.random.split(key)
+
+        # To visualize conditional models (like MNIST), we need valid conditions.
+        # We sample a real batch just to get representative conditions (e.g. labels).
+        # For unconditional datasets, .cond will be None, which is handled correctly.
+        ref_batch = data.get_batch(cond_key, self.cfg.dataset, self.cfg.vis.num_vis_samples)
+        cond = ref_batch.cond
+
+        # Generate samples with the retrieved conditions
         samples, _ = strategy.sample_from_target_distribution(
             model=model,
             key=key,
             num_samples=self.cfg.vis.num_vis_samples,
             data_dim=self.cfg.dataset.data_dim,
+            cond=cond,  # Pass the conditions
         )
 
         self._log_batch(

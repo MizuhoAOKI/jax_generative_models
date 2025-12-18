@@ -12,6 +12,8 @@ import jax.numpy as jnp
 import optuna
 import tyro
 
+from jax_gen import data  # dataset_cfg の型参照のために追加
+
 # Initialize module-level logger
 logger = logging.getLogger(__name__)
 
@@ -312,12 +314,13 @@ class MLP(eqx.Module):
         # Output Layer: Projects back to data_dim
         self.layers.append(eqx.nn.Linear(config.hidden_dim, data_dim, key=keys[-1]))
 
-    def __call__(self, t: jax.Array, x: jax.Array) -> jax.Array:
+    def __call__(self, t: jax.Array, x: jax.Array, cond: jax.Array | None = None) -> jax.Array:
         """Forward pass.
 
         Args:
             t: Scalar time input.
             x: Input data vector of shape (data_dim,).
+            cond: Optional conditioning (unused in this model).
 
         Returns:
             Output vector of shape (data_dim,).
@@ -402,12 +405,13 @@ class ResNet(eqx.Module):
         # 4. Output Projection
         self.output_proj = eqx.nn.Linear(config.hidden_dim, data_dim, key=keys[-1])
 
-    def __call__(self, t: jax.Array, x: jax.Array) -> jax.Array:
+    def __call__(self, t: jax.Array, x: jax.Array, cond: jax.Array | None = None) -> jax.Array:
         """Forward pass.
 
         Args:
             t: Scalar time input.
             x: Input data vector of shape (data_dim,).
+            cond: Optional conditioning (unused in this model).
 
         Returns:
             Output vector of shape (data_dim,).
@@ -437,6 +441,7 @@ class UNet(eqx.Module):
     input_conv: eqx.nn.Conv2d
     time_embed: SinusoidalTimeEmbed
     time_proj: eqx.nn.Linear
+    label_embed: eqx.nn.Embedding | None
 
     downs: list[tuple[ResnetBlockConv, eqx.nn.Conv2d]]
     mid_block: ResnetBlockConv
@@ -444,21 +449,23 @@ class UNet(eqx.Module):
 
     output_conv: eqx.nn.Conv2d
 
-    img_size: int
-    img_channels: int
+    # Fields marked as static are not saved in the Pytree leaves.
+    img_size: int = eqx.field(static=True)
+    img_channels: int = eqx.field(static=True)
 
-    def __init__(self, config: UNetConfig, data_dim: int, key: jax.Array):
+    def __init__(self, config: UNetConfig, dataset_cfg: data.DatasetConfig, key: jax.Array):
         self.img_channels = config.image_channels
+        data_dim = dataset_cfg.data_dim
 
         # Infer image size from data_dim (assuming square: H*W*C = data_dim)
-        self.img_size = int(math.sqrt(data_dim / config.image_channels))
-        if self.img_size * self.img_size * config.image_channels != data_dim:
+        self.img_size = int(math.sqrt(data_dim / self.img_channels))
+        if self.img_size * self.img_size * self.img_channels != data_dim:
             logger.warning(
                 f"Data dim {data_dim} does not match square image "
                 f"({self.img_channels}x{self.img_size}x{self.img_size})."
             )
 
-        key, k_in, k_time, k_mid, k_out = jax.random.split(key, 5)
+        key, k_in, k_time, k_mid, k_out, k_embed = jax.random.split(key, 6)
 
         dims = [config.hidden_dim * m for m in config.dim_mults]
 
@@ -466,9 +473,24 @@ class UNet(eqx.Module):
         self.time_embed = SinusoidalTimeEmbed(config.hidden_dim)
         self.time_proj = eqx.nn.Linear(config.hidden_dim, time_dim, key=k_time)
 
+        # Conditional Embedding derived from dataset metadata
+        if dataset_cfg.condition_type == data.ConditionType.DISCRETE:
+            num_classes = data.get_num_classes(dataset_cfg)
+            if num_classes is not None:
+                # +1 for the Null Token used in CFG
+                self.label_embed = eqx.nn.Embedding(
+                    num_embeddings=num_classes + 1,
+                    embedding_size=time_dim,
+                    key=k_embed,
+                )
+            else:
+                self.label_embed = None
+        else:
+            self.label_embed = None
+
         # Input Projection
         self.input_conv = eqx.nn.Conv2d(
-            config.image_channels, dims[0], kernel_size=3, padding=1, key=k_in
+            self.img_channels, dims[0], kernel_size=3, padding=1, key=k_in
         )
 
         # Downsample Path
@@ -504,8 +526,6 @@ class UNet(eqx.Module):
             )
 
             # ResBlock takes concatenated input (curr_dim_after_upsample + skip_dim)
-            # Since upsample goes curr_dim -> dim, and skip is dim:
-            # Input to ResBlock is dim + dim
             block = ResnetBlockConv(dim + skip_dim, dim, time_dim, key=k_res)
 
             self.ups.append((block, upsample))
@@ -513,17 +533,23 @@ class UNet(eqx.Module):
 
         # Output Projection
         self.output_conv = eqx.nn.Conv2d(
-            curr_dim, config.image_channels, kernel_size=3, padding=1, key=k_out
+            curr_dim, self.img_channels, kernel_size=3, padding=1, key=k_out
         )
 
-    def __call__(self, t: jax.Array, x: jax.Array) -> jax.Array:
+    def __call__(self, t: jax.Array, x: jax.Array, cond: jax.Array | None = None) -> jax.Array:
         # 1. Reshape Flat Vector -> Image (C, H, W)
         x_img = x.reshape(self.img_channels, self.img_size, self.img_size)
 
         # 2. Time Embedding
         t_emb = jax.nn.silu(self.time_proj(self.time_embed(t)))
 
-        # 3. Encoder
+        # 3. Add Condition Embedding
+        if self.label_embed is not None and cond is not None:
+            # cond is expected to be scalar (int) here (inside vmap)
+            c_emb = self.label_embed(cond)
+            t_emb = t_emb + c_emb
+
+        # 4. Encoder
         h = self.input_conv(x_img)
         skips = []
 
@@ -532,10 +558,10 @@ class UNet(eqx.Module):
             skips.append(h)
             h = downsample(h)
 
-        # 4. Bottleneck
+        # 5. Bottleneck
         h = self.mid_block(h, t_emb)
 
-        # 5. Decoder
+        # 6. Decoder
         for block, upsample in self.ups:
             h = upsample(h)
             skip = skips.pop()
@@ -543,7 +569,7 @@ class UNet(eqx.Module):
             h = jnp.concatenate([h, skip], axis=0)
             h = block(h, t_emb)
 
-        # 6. Output & Flatten -> (D,)
+        # 7. Output & Flatten -> (D,)
         out = self.output_conv(h)
         return out.flatten()
 
@@ -553,13 +579,17 @@ class UNet(eqx.Module):
 # --------------------------------------------------------
 
 
-def create_model(config: ModelConfig, key: jax.Array, data_dim: int) -> eqx.Module:
+def create_model(
+    config: ModelConfig,
+    dataset_cfg: data.DatasetConfig,
+    key: jax.Array,
+) -> eqx.Module:
     """Factory function to instantiate the correct model based on configuration.
 
     Args:
-        config: The model configuration object (MLPConfig or ResNetConfig).
+        config: The model configuration object.
+        dataset_cfg: The dataset configuration, defining dimensionality and conditioning.
         key: JAX PRNGKey for initialization.
-        data_dim: The dimensionality of the input data.
 
     Returns:
         An initialized Equinox Module.
@@ -567,15 +597,17 @@ def create_model(config: ModelConfig, key: jax.Array, data_dim: int) -> eqx.Modu
     Raises:
         ValueError: If the configuration type is unknown.
     """
-    logger.info(f"Creating model: {config.type}")
-    logger.debug(f"Model config: {config}")
+    logger.info(f"Creating model: {config.type} for dataset: {dataset_cfg.name}")
 
     match config:
         case MLPConfig():
-            return MLP(config, data_dim, key)
+            return MLP(config, dataset_cfg.data_dim, key)
+
         case ResNetConfig():
-            return ResNet(config, data_dim, key)
+            return ResNet(config, dataset_cfg.data_dim, key)
+
         case UNetConfig():
-            return UNet(config, data_dim, key)
+            return UNet(config, dataset_cfg, key)
+
         case _:
             raise ValueError(f"Unknown model config: {type(config)}")

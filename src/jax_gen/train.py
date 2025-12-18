@@ -34,7 +34,8 @@ def train(cfg: TrainConfig, key: jax.Array) -> None:
     key, init_key = jax.random.split(key)
 
     # Initialize model and strategy based on config
-    model = models.create_model(cfg.model, init_key, data_dim=cfg.dataset.data_dim)
+    # Now passing the full dataset config to ensure interface consistency
+    model = models.create_model(cfg.model, cfg.dataset, init_key)
     strategy = create_strategy(cfg.strategy)
 
     # Partition model parameters (learnable vs. static)
@@ -58,13 +59,18 @@ def train(cfg: TrainConfig, key: jax.Array) -> None:
     # 3. Define Loss & Step Functions
     # -------------------------------------------------------------------------
     def batch_loss(
-        params: eqx.Module, static: eqx.Module, batch: jax.Array, keys: jax.Array
+        params: eqx.Module, static: eqx.Module, batch: data.Batch, keys: jax.Array
     ) -> jax.Array:
-        """Computes the mean loss over a batch of data."""
+        """Computes the mean loss over a batch of data, handling CFG dropout."""
         model = eqx.combine(params, static)
+
+        # Apply Classifier-Free Guidance (CFG) dropout
+        batch_masked = data.apply_cfg_dropout(batch, keys[0], cfg.cond_dropout_rate, cfg.dataset)
+
         # Vectorize the strategy's loss function over the batch
-        # in_axes: model=None, x=0, key=0
-        loss_per_sample = jax.vmap(strategy.loss_fn, in_axes=(None, 0, 0))(model, batch, keys)
+        loss_per_sample = jax.vmap(strategy.loss_fn, in_axes=(None, 0, 0, 0))(
+            model, batch_masked.x, batch_masked.cond, keys
+        )
         return jnp.mean(loss_per_sample)
 
     @eqx.filter_jit
@@ -72,13 +78,13 @@ def train(cfg: TrainConfig, key: jax.Array) -> None:
         params: eqx.Module,
         static: eqx.Module,
         opt_state: optax.OptState,
-        batch: jax.Array,
+        batch: data.Batch,
         key: jax.Array,
     ) -> tuple[eqx.Module, eqx.Module, optax.OptState, jax.Array, jax.Array]:
         """Performs a single optimization step."""
         # Split keys for the batch dimension
         key, subkey = jax.random.split(key)
-        keys_batch = jax.random.split(subkey, batch.shape[0])
+        keys_batch = jax.random.split(subkey, batch.x.shape[0])
 
         # Compute gradients
         (loss, grads) = eqx.filter_value_and_grad(batch_loss)(params, static, batch, keys_batch)
@@ -98,7 +104,7 @@ def train(cfg: TrainConfig, key: jax.Array) -> None:
         # Manage PRNG keys: separate keys for data sampling, training noise, and visualization
         key, data_key, train_key, vis_key = jax.random.split(key, 4)
 
-        # Load data batch
+        # Load data batch (Returns a data.Batch object)
         batch = data.get_batch(data_key, cfg.dataset, cfg.batch_size)
 
         # Execute training step
@@ -109,7 +115,6 @@ def train(cfg: TrainConfig, key: jax.Array) -> None:
             logger.info(f"step={step + 1:6d} | loss={float(loss):.6f}")
 
         # Logging (Experiment Tracker)
-        # Conditionals/intervals are encapsulated within the tracker
         exp_tracker.log_step(
             step=step,
             loss=float(loss),
