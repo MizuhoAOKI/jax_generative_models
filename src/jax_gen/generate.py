@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Protocol
 
 import equinox as eqx
 import jax
@@ -12,8 +13,15 @@ from jax_gen.strategies import create_strategy
 logger = logging.getLogger(__name__)
 
 
+class ConditionableConfig(Protocol):
+    num_samples: int
+    condition: int | None
+    condition_from_idx: int | None
+    condition_from_file: Path | None
+
+
 def get_condition_batch(
-    cfg: GenerateConfig, dataset_cfg: data.DatasetConfig, key: jax.Array
+    cfg: ConditionableConfig, dataset_cfg: data.DatasetConfig, key: jax.Array
 ) -> jax.Array | None:
     """Creates a batch of conditions based on the user configuration.
 

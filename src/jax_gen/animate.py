@@ -9,7 +9,7 @@ import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 import numpy as np
 
-from jax_gen import data, models, visualizer
+from jax_gen import data, generate, models, visualizer
 from jax_gen.config import AnimateConfig
 from jax_gen.strategies import create_strategy
 
@@ -41,7 +41,7 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
         raise FileNotFoundError(f"Model file not found at: {cfg.model_path}")
 
     logger.info(f"Loading model from {cfg.model_path}...")
-    model_init = models.create_model(cfg.model, key, data_dim=cfg.dataset.data_dim)
+    model_init = models.create_model(cfg.model, cfg.dataset, key)
     model = eqx.tree_deserialise_leaves(cfg.model_path, model_init)
 
     logger.info(f"Initializing strategy: {cfg.strategy.name}")
@@ -51,7 +51,8 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
     # 2. Generate Trajectory
     # -------------------------------------------------------------------------
     logger.info(f"Generating trajectory for {cfg.num_samples} samples...")
-    key, subkey = jax.random.split(key)
+    key, cond_key, subkey = jax.random.split(key, 3)
+    cond_batch = generate.get_condition_batch(cfg, cfg.dataset, cond_key)
 
     # Retrieve the full trajectory.
     # Shape of x_traj: (num_time_steps, num_samples, data_dim)
@@ -60,6 +61,7 @@ def animate(cfg: AnimateConfig, key: jax.Array) -> None:
         key=subkey,
         num_samples=cfg.num_samples,
         data_dim=cfg.dataset.data_dim,
+        cond=cond_batch,
     )
 
     # Convert to NumPy for Matplotlib

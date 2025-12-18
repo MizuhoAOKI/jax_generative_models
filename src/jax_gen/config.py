@@ -69,7 +69,7 @@ class GenerateConfig(CommonConfig):
     mode: Literal["generate"] = "generate"
     """This is the generation mode."""
 
-    num_samples: int = 16
+    num_samples: int = 3000
     """Number of samples to generate."""
 
     output_image_path: Path = Path("outputs/generated.png")
@@ -102,3 +102,14 @@ class AnimateConfig(CommonConfig):
 
     fps: int = 30
     """Frames per second for the video (determines playback speed)."""
+
+    # --- Conditioning Options ---
+
+    condition: int | None = None
+    """Fixed condition value (e.g., class label) to generate."""
+
+    condition_from_idx: int | None = None
+    """Index of the dataset sample to use as a condition."""
+
+    condition_from_file: Path | None = None
+    """Path to a file containing the condition data."""
